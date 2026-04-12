@@ -4,8 +4,7 @@
 ;; Bootstrap protocol for DHCP
 ;; 8-byte fixed header + variable-length options
 
-(import (jerboa prelude)
-        (lib dissector protocol))
+(import (jerboa prelude))
 
 ;; ── DHCP Operation Type Formatter ──────────────────────────────────────────
 

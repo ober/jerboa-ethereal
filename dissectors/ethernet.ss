@@ -4,8 +4,7 @@
 ;; Clean, safe dissector with zero boilerplate.
 ;; Returns (ok packet-data) or (err message) on any issue.
 
-(import (jerboa prelude)
-        (lib dissector protocol))
+(import (jerboa prelude))
 
 (def (dissect-ethernet buffer)
   "Parse Ethernet frame from bytevector

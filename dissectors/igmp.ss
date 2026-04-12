@@ -4,8 +4,7 @@
 ;; Handles IGMP membership reports and queries
 ;; Versions supported: IGMPv1, IGMPv2, IGMPv3
 
-(import (jerboa prelude)
-        (lib dissector protocol))
+(import (jerboa prelude))
 
 ;; ── IGMP Message Type Formatters ───────────────────────────────────────
 

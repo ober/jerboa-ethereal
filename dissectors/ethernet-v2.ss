@@ -3,7 +3,7 @@
 ;;
 ;; Clean DSL that compiles to safe, performant code.
 
-(import (jerboa prelude)
+(import (jerboa prelude))
         (lib dsl defprotocol))
 
 ;; ── Ethernet Dissector (hand-optimized version) ─────────────────────────────

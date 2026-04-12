@@ -9,8 +9,7 @@
 ;; - Time Exceeded (3)
 ;; - Parameter Problem (4)
 
-(import (jerboa prelude)
-        (lib dissector protocol))
+(import (jerboa prelude))
 
 ;; ── ICMPv6 Message Type Formatters ────────────────────────────────────
 

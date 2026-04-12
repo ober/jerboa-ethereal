@@ -4,8 +4,7 @@
 ;; Complex protocol with variable-length options.
 ;; Demonstrates safe handling of optional fields.
 
-(import (jerboa prelude)
-        (lib dissector protocol))
+(import (jerboa prelude))
 
 (def (dissect-tcp buffer)
   "Parse TCP segment from bytevector

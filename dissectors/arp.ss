@@ -4,8 +4,7 @@
 ;; Maps IP addresses to hardware (MAC) addresses
 ;; Supports Ethernet, IP, and other address types
 
-(import (jerboa prelude)
-        (lib dissector protocol))
+(import (jerboa prelude))
 
 ;; ── Hardware Type Constants ────────────────────────────────────────────
 

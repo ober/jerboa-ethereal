@@ -3,8 +3,53 @@
 ;;
 ;; Production dissector with inline safety and error handling.
 
-(import (jerboa prelude)
-        (lib dissector protocol))
+(import (jerboa prelude))
+
+;; ── Safe Reading Primitives (inlined from lib/dissector/protocol.ss) ─────
+
+(def (read-u8 buf offset)
+  "Read u8 at offset, returns (ok val) or (err msg)"
+  (if (>= offset (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u8-ref buf offset))))
+
+(def (read-u16be buf offset)
+  "Read u16 big-endian at offset"
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness big)))))
+
+(def (read-u32be buf offset)
+  "Read u32 big-endian at offset"
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness big)))))
+
+(def (extract-bits val mask shift)
+  "Extract masked bits and shift"
+  (bitwise-arithmetic-shift-right (bitwise-and val mask) shift))
+
+(def (validate pred msg)
+  "Check predicate, return (err msg) or (ok #t)"
+  (if pred (ok #t) (err msg)))
+
+(def (slice buf offset len)
+  "Extract slice [offset, offset+len), returns (ok bytes) or (err msg)"
+  (if (> (+ offset len) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (let ((result (make-bytevector len)))
+            (bytevector-copy! buf offset result 0 len)
+            result))))
+
+(def (fmt-ipv4 addr)
+  "Convert u32 to a.b.c.d"
+  (let ((b0 (bitwise-arithmetic-shift-right addr 24))
+        (b1 (bitwise-and (bitwise-arithmetic-shift-right addr 16) 255))
+        (b2 (bitwise-and (bitwise-arithmetic-shift-right addr 8) 255))
+        (b3 (bitwise-and addr 255)))
+    (str b0 "." b1 "." b2 "." b3)))
+
+;; ── IPv4 Dissector ────────────────────────────────────────────────────────
 
 (def (dissect-ipv4 buffer)
   "Parse IPv4 packet from bytevector

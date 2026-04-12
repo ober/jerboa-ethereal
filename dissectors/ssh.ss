@@ -4,8 +4,7 @@
 ;; Basic SSH protocol parsing - unencrypted protocol header analysis
 ;; Full message decryption is crypto-intensive and handled separately
 
-(import (jerboa prelude)
-        (lib dissector protocol))
+(import (jerboa prelude))
 
 ;; ── SSH Protocol Message Type Formatter ────────────────────────────────────
 

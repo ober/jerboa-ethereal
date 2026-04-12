@@ -1,7 +1,7 @@
 ;; jerboa-ethereal/dissectors/ipv4-v2.ss
 ;; RFC 791: Internet Protocol Version 4 (Code-Generated Dissector)
 
-(import (jerboa prelude)
+(import (jerboa prelude))
         (lib dsl defprotocol))
 
 ;; ── IPv4 Dissector ─────────────────────────────────────────────────────────

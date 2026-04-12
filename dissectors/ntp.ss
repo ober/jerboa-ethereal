@@ -4,8 +4,7 @@
 ;; Fixed 48-byte header structure for NTP packets
 ;; Used for time synchronization over UDP
 
-(import (jerboa prelude)
-        (lib dissector protocol))
+(import (jerboa prelude))
 
 ;; ── NTP Mode Formatter ─────────────────────────────────────────────────────
 

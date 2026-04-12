@@ -3,8 +3,7 @@
 ;;
 ;; 40-byte fixed header with extension header chaining
 
-(import (jerboa prelude)
-        (lib dissector protocol))
+(import (jerboa prelude))
 
 ;; ── IPv6 Next Header Formatter ────────────────────────────────────────────
 

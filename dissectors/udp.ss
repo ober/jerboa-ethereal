@@ -3,8 +3,7 @@
 ;;
 ;; Simple, safe UDP dissector.
 
-(import (jerboa prelude)
-        (lib dissector protocol))
+(import (jerboa prelude))
 
 (def (dissect-udp buffer)
   "Parse UDP datagram from bytevector

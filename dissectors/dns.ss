@@ -5,8 +5,7 @@
 ;; Supports UDP and TCP transport
 ;; Note: Full domain name decompression is complex; basic version extracts header only
 
-(import (jerboa prelude)
-        (lib dissector protocol))
+(import (jerboa prelude))
 
 ;; ── DNS Opcode Formatter ──────────────────────────────────────────────
 
