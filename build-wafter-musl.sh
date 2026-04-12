@@ -1,5 +1,5 @@
 #!/bin/bash
-# build-ethereal-musl.sh — Build ethereal as a fully static binary using musl libc
+# build-wafter-musl.sh — Build wafter as a fully static binary using musl libc
 #
 # Prerequisites:
 #   - musl-gcc installed (apt install musl-tools)
@@ -28,7 +28,7 @@ fi
 export JERBOA_HOME="${JERBOA_HOME:-$(dirname "$JERBOA_LIB")}"
 
 echo "==================================="
-echo "Building ethereal-musl (static)"
+echo "Building wafter-musl (static)"
 echo "==================================="
 echo ""
 echo "Jerboa: $JERBOA_LIB"
@@ -46,22 +46,22 @@ echo "  musl-gcc: $(command -v musl-gcc)"
 echo ""
 
 echo "[2/2] Running musl build..."
-scheme -q --libdirs "${SCRIPT_DIR}:${JERBOA_LIB}" --script build-ethereal-musl.ss
+scheme -q --libdirs "${SCRIPT_DIR}:${JERBOA_LIB}" --script build-wafter-musl.ss
 
 # ── Verify ──────────────────────────────────────────────────────────────────
-if [ -f "ethereal-musl" ]; then
+if [ -f "wafter-musl" ]; then
     echo ""
     echo "==================================="
-    echo "ethereal-musl built successfully!"
+    echo "wafter-musl built successfully!"
     echo "==================================="
-    ls -lh ethereal-musl
+    ls -lh wafter-musl
     echo ""
-    file ethereal-musl
+    file wafter-musl
     echo ""
-    ldd ethereal-musl 2>&1 || echo "  (Fully static — no dynamic dependencies)"
+    ldd wafter-musl 2>&1 || echo "  (Fully static — no dynamic dependencies)"
     echo ""
-    echo "Test: ./ethereal-musl --version"
+    echo "Test: ./wafter-musl --version"
 else
-    echo "ERROR: ethereal-musl not created"
+    echo "ERROR: wafter-musl not created"
     exit 1
 fi

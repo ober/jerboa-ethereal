@@ -1,8 +1,15 @@
 #!/usr/bin/env scheme
 ;; wafter - PCAP analyzer tool
-;; Phase 6: Extended protocols, flow analysis, and statistics
+;; Phase 7: Static binary, full protocol dissection
 
 (import (jerboa prelude))
+
+(def wafter-version "0.7.0")
+
+(def (show-version)
+  (displayln (str "wafter " wafter-version))
+  (displayln "PCAP packet analyzer — jerboa-ethereal")
+  (displayln "Protocols: Ethernet, IPv4, IPv6, ARP, TCP, UDP, ICMP, ICMPv6, IGMP, DNS, DHCP, NTP, SSH"))
 
 ;; ── Dissection Helpers ─────────────────────────────────────────────────────
 
@@ -55,17 +62,19 @@
   (displayln "wafter - PCAP packet analyzer")
   (displayln "════════════════════════════════════════════════════════════")
   (displayln "")
-  (displayln "Usage: scheme wafter.ss <pcap-file> <command>")
+  (displayln "Usage:")
+  (displayln "  ./wafter-musl <pcap-file> <command>")
+  (displayln "  scheme wafter.ss <pcap-file> <command>")
   (displayln "")
   (displayln "Commands:")
-  (displayln "  stats       - Show basic statistics")
+  (displayln "  stats       - Show packet statistics")
   (displayln "  list N      - List first N packets with protocol info")
-  (displayln "  protocols   - Count packets by protocol layer")
+  (displayln "  protocols   - Count packets by EtherType")
+  (displayln "  --version   - Show version")
   (displayln "")
   (displayln "Example:")
-  (displayln "  scheme wafter.ss capture.pcap stats")
-  (displayln "")
-  (displayln "Phase 6 Status: Extended protocols, flow analysis, statistics")
+  (displayln "  ./wafter-musl capture.pcap stats")
+  (displayln "  ./wafter-musl capture.pcap list 20")
   (displayln "")
   (displayln "Supported protocols:")
   (displayln "  Layer 2: Ethernet, ARP")
@@ -77,85 +86,89 @@
 
 ;; ── Main ────────────────────────────────────────────────────────────────
 
-(let ((args (command-line-arguments)))
-  (cond
-    ((< (length args) 2)
-     (show-help))
+;; wafter-main is called by the C entry point in the static binary
+(def (wafter-main)
+  (let ((args (command-line-arguments)))
+    (cond
+      ((and (= (length args) 1) (string=? (car args) "--version"))
+       (show-version))
+      ((< (length args) 2)
+       (show-help))
+      (else
+       (wafter-run (car args) (cadr args) args)))))
+
+(def (wafter-run pcap-file command args)
+  (try
+    (displayln (str "Reading PCAP: " pcap-file))
+    (let ((packets (read-pcap-packets pcap-file)))
+      (displayln (str "Loaded " (length packets) " packets\n"))
+      (wafter-dispatch command args packets))
+    (catch (e)
+      (displayln (str "Error: " e))
+      (show-help))))
+
+(def (wafter-dispatch command args packets)
+  (case (string->symbol command)
+    ((stats)
+     (displayln "PCAP Statistics")
+     (displayln "════════════════════════════════════════════════════════════")
+     (displayln (str "Total packets: " (length packets)))
+     (let ((total-size (apply + (map (lambda (p) (bytevector-length (cdr p)))
+                                     packets))))
+       (displayln (str "Total bytes: " total-size))
+       (if (> (length packets) 0)
+           (displayln (str "Avg packet: " (quotient total-size (length packets)))))
+       (displayln "")))
+
+    ((protocols)
+     (displayln "Protocol Distribution")
+     (displayln "════════════════════════════════════════════════════════════")
+     (let ((proto-count (make-hash-table)))
+       (for ((pkt packets))
+         (let ((data (cdr pkt)))
+           (if (>= (bytevector-length data) 14)
+               (let ((etype-result (read-u16be data 12)))
+                 (if (ok? etype-result)
+                     (let ((etype (unwrap etype-result)))
+                       (let ((proto (case etype
+                                     ((#x0800) "IPv4")
+                                     ((#x0806) "ARP")
+                                     ((#x86DD) "IPv6")
+                                     (else (str "0x" (format "~4,'0x" etype))))))
+                         (hash-put! proto-count proto
+                                   (+ 1 (hash-get proto-count proto 0))))))))))
+       (let ((sorted (sort (hash->list proto-count)
+                          (lambda (a b) (> (cdr a) (cdr b))))))
+         (for ((entry sorted))
+           (displayln (str (car entry) ": " (cdr entry)))))))
+
+    ((list)
+     (let ((count (if (>= (length args) 3)
+                     (string->number (caddr args))
+                     10)))
+       (displayln (str "First " count " packets\n"))
+       (displayln "Pkt#  Size Protocol")
+       (displayln "──── ──── ──────────────────")
+       (let loop ((items packets) (idx 0))
+         (if (or (>= idx count) (null? items))
+             (displayln "")
+             (let* ((pkt (car items))
+                    (size (bytevector-length (cdr pkt))))
+               (printf "~4d ~5d " idx size)
+               (if (>= size 14)
+                   (let ((etype-result (read-u16be (cdr pkt) 12)))
+                     (if (ok? etype-result)
+                         (let ((etype (unwrap etype-result)))
+                           (if (= etype #x0800)
+                               (displayln "Ethernet/IPv4")
+                               (displayln (str "EtherType 0x" (format "~4,'0x" etype)))))
+                         (displayln "Ethernet")))
+                   (displayln "Too small"))
+               (loop (cdr items) (+ idx 1)))))))
 
     (else
-     (let ((pcap-file (car args))
-           (command (cadr args)))
+     (displayln (str "Unknown command: " command))
+     (show-help))))
 
-       (try
-         (displayln (str "Reading PCAP: " pcap-file))
-         (let ((packets (read-pcap-packets pcap-file)))
-           (displayln (str "Loaded " (length packets) " packets\n"))
-
-           (case (string->symbol command)
-             ((stats)
-              (displayln "PCAP Statistics")
-              (displayln "════════════════════════════════════════════════════════════")
-              (displayln (str "Total packets: " (length packets)))
-              (let ((total-size (apply + (map (lambda (p) (bytevector-length (cdr p)))
-                                              packets))))
-                (displayln (str "Total bytes: " total-size))
-                (if (> (length packets) 0)
-                    (displayln (str "Avg packet: " (quotient total-size (length packets)))))
-                (displayln "")))
-
-             ((protocols)
-              (displayln "Protocol Distribution")
-              (displayln "════════════════════════════════════════════════════════════")
-              (let ((proto-count (make-hash-table)))
-                ;; Count protocols from EtherType
-                (for ((pkt packets))
-                  (let ((data (cdr pkt)))
-                    (if (>= (bytevector-length data) 14)
-                        (let ((etype-result (read-u16be data 12)))
-                          (if (ok? etype-result)
-                              (let ((etype (unwrap etype-result)))
-                                (let ((proto (case etype
-                                              ((#x0800) "IPv4")
-                                              ((#x0806) "ARP")
-                                              ((#x86DD) "IPv6")
-                                              (else (str "0x" (format "~4,'0x" etype))))))
-                                  (hash-put! proto-count proto
-                                            (+ 1 (hash-get proto-count proto 0))))))))))
-
-                ;; Display results sorted by count
-                (let ((sorted (sort (hash->list proto-count)
-                                   (lambda (a b) (> (cdr a) (cdr b))))))
-                  (for ((entry sorted))
-                    (displayln (str (car entry) ": " (cdr entry)))))))
-
-             ((list)
-              (let ((count (if (>= (length args) 3)
-                             (string->number (caddr args))
-                             10)))
-                (displayln (str "First " count " packets\n"))
-                (displayln "Pkt#  Size Protocol")
-                (displayln "──── ──── ──────────────────")
-                (let loop ((items packets) (idx 0))
-                  (if (or (>= idx count) (null? items))
-                      (displayln "")
-                      (let* ((pkt (car items))
-                             (size (bytevector-length (cdr pkt))))
-                        (printf "~4d ~5d " idx size)
-                        (if (>= size 14)
-                            (let ((etype-result (read-u16be (cdr pkt) 12)))
-                              (if (ok? etype-result)
-                                  (let ((etype (unwrap etype-result)))
-                                    (if (= etype #x0800)
-                                        (displayln "Ethernet/IPv4")
-                                        (displayln (str "EtherType 0x" (format "~4,'0x" etype)))))
-                                  (displayln "Ethernet")))
-                            (displayln "Too small"))
-                        (loop (cdr items) (+ idx 1)))))))
-
-             (else
-              (displayln (str "Unknown command: " command))
-              (show-help))))
-
-         (catch (e)
-           (displayln (str "Error: " e))
-           (show-help)))))))
+;; Entry point: interpreter mode calls wafter-main directly
+(wafter-main)

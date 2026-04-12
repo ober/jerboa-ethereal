@@ -268,7 +268,7 @@ scheme --libdirs lib --script test-runner.ss
 
 # Compile and run static binary
 make linux
-./ethereal-musl --help
+./wafter-musl --help
 ```
 
 ## Lessons Learned

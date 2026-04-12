@@ -72,7 +72,7 @@ clean:
 	find lib -name "*.so" -delete
 	find lib -name "*.wpo" -delete
 	find . -name "*~" -delete
-	rm -f ethereal-musl ethereal-musl.sha256
+	rm -f wafter-musl wafter-musl.sha256
 
 # ── Static Binary Builds (Linux) ────────────────────────────────────────────
 # See docs/BUILD_STATIC.md for detailed documentation
@@ -84,26 +84,26 @@ linux: docker
 
 # Build locally (requires musl-gcc + musl-built Chez at ~/chez-musl)
 linux-local:
-	JERBOA_HOME=$(JERBOA_HOME) ./build-ethereal-musl.sh
+	JERBOA_HOME=$(JERBOA_HOME) ./build-wafter-musl.sh
 
 # Docker build and extract
 docker:
-	@echo "=== Building ethereal-musl in Docker ==="
+	@echo "=== Building wafter-musl in Docker ==="
 	docker build --platform linux/amd64 -t ethereal-builder .
 	@id=$$(docker create --platform linux/amd64 ethereal-builder) && \
-	docker cp $$id:/out/ethereal-musl ./ethereal-musl && \
-	docker cp $$id:/out/ethereal-musl.sha256 ./ethereal-musl.sha256 && \
+	docker cp $$id:/out/wafter-musl ./wafter-musl && \
+	docker cp $$id:/out/wafter-musl.sha256 ./wafter-musl.sha256 && \
 	docker rm $$id >/dev/null && \
-	chmod +x ethereal-musl
+	chmod +x wafter-musl
 	@echo ""
-	@ls -lh ethereal-musl
+	@ls -lh wafter-musl
 
 # Verify binary hardening
 verify-harden: linux
 	@echo "=== Binary Hardening Verification ==="
-	@(file ethereal-musl | grep -qE 'stripped|no section header') && echo "  PASS: binary is stripped" || echo "  FAIL: not stripped"
-	@if strings ethereal-musl | grep -q "$(HOME)"; then echo "  WARN: home paths found"; else echo "  PASS: no home paths"; fi
-	@[ -f ethereal-musl.sha256 ] && echo "  PASS: SHA256 hash exists" || echo "  FAIL: no hash"
-	@./ethereal-musl --version >/dev/null 2>&1 && echo "  PASS: binary runs" || echo "  FAIL: doesn't run"
+	@(file wafter-musl | grep -qE 'stripped|no section header') && echo "  PASS: binary is stripped" || echo "  FAIL: not stripped"
+	@if strings wafter-musl | grep -q "$(HOME)"; then echo "  WARN: home paths found"; else echo "  PASS: no home paths"; fi
+	@[ -f wafter-musl.sha256 ] && echo "  PASS: SHA256 hash exists" || echo "  FAIL: no hash"
+	@./wafter-musl --version >/dev/null 2>&1 && echo "  PASS: binary runs" || echo "  FAIL: doesn't run"
 
 .DEFAULT_GOAL := help

@@ -546,13 +546,13 @@ Build fully static, zero-dependency Linux binaries for `ethereal` CLI using Dock
   - Stage 2 (output): Minimal ubuntu:24.04, extract binary only
   - Verify in builder: runs, no path leaks, stripped
 
-- [ ] **Create build-ethereal-musl.sh** (shell orchestrator)
+- [ ] **Create build-wafter-musl.sh** (shell orchestrator)
   - Resolve Jerboa path
   - Check musl-gcc availability
   - Invoke Chez build script
   - Verify binary (file, ldd, run)
 
-- [ ] **Create build-ethereal-musl.ss** (Chez build script)
+- [ ] **Create build-wafter-musl.ss** (Chez build script)
   - Locate musl Chez at ~/chez-musl
   - Compile all dissector modules (optimize-level 3, WPO)
   - Generate ethereal-main.c (C entry point)
@@ -566,7 +566,7 @@ Build fully static, zero-dependency Linux binaries for `ethereal` CLI using Dock
   - `make docker`: Run Docker build directly
   - `make verify-harden`: Verify binary (stripped, no leaks, runs)
 
-- [ ] **Clean target** removes ethereal-musl and .sha256
+- [ ] **Clean target** removes wafter-musl and .sha256
 
 ### 7-Static.3 Verification & Hardening
 - [ ] **Binary verification**
@@ -578,8 +578,8 @@ Build fully static, zero-dependency Linux binaries for `ethereal` CLI using Dock
 
 ### 7-Static.4 Distribution Setup
 - [ ] **Prepare artifacts**
-  - ethereal-musl (executable binary)
-  - ethereal-musl.sha256 (integrity hash)
+  - wafter-musl (executable binary)
+  - wafter-musl.sha256 (integrity hash)
   - CHECKSUMS file (all artifacts)
 
 ---
@@ -724,9 +724,9 @@ Keep Jerboa dissectors in sync with upstream Wireshark changes.
 
 ### Milestone 5 (Weeks 18-20): Static Binary Build
 - Phase 7-Static complete: Docker build, musl static linking, verification
-- Build `ethereal-musl` (fully static, zero dependencies)
+- Build `wafter-musl` (fully static, zero dependencies)
 - Demo: users download single binary and run immediately
-- Deliverable: Dockerfile, build scripts, ethereal-musl binary, SHA256 hash
+- Deliverable: Dockerfile, build scripts, wafter-musl binary, SHA256 hash
 
 ### Milestone 6 (Weeks 21-24): Testing & Validation
 - Phase 8 complete: comprehensive test suite, benchmarking, security audit

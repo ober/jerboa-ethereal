@@ -8,11 +8,11 @@ Build fully static, zero-dependency Linux binaries for `ethereal` CLI using Dock
 
 ## Vision
 
-Users can download a single `ethereal-musl` binary and immediately:
+Users can download a single `wafter-musl` binary and immediately:
 ```bash
-$ ./ethereal-musl dissect capture.pcap
-$ ./ethereal-musl search "GET" capture.pcap
-$ ./ethereal-musl edit capture.pcap --set ip.dst-ip 10.0.0.2 -o edited.pcap
+$ ./wafter-musl dissect capture.pcap
+$ ./wafter-musl search "GET" capture.pcap
+$ ./wafter-musl edit capture.pcap --set ip.dst-ip 10.0.0.2 -o edited.pcap
 ```
 
 No Chez Scheme installation, no Jerboa libraries, no libc version mismatches. Pure ELF binary.
@@ -47,7 +47,7 @@ No Chez Scheme installation, no Jerboa libraries, no libc version mismatches. Pu
     ↓
 [Phase 4: Strip + verify + hash]
     ↓
-[Final: ethereal-musl (ELF binary)]
+[Final: wafter-musl (ELF binary)]
 ```
 
 ---
@@ -64,27 +64,27 @@ FROM jerboa21/jerboa AS builder
 # Copy jerboa-ethereal source
 COPY . /build/mine/jerboa-ethereal
 
-# Build ethereal-musl
+# Build wafter-musl
 WORKDIR /build/mine/jerboa-ethereal
 RUN make linux-local
 
 # Verify
-RUN ./ethereal-musl --version
+RUN ./wafter-musl --version
 RUN echo "--- Binary info ---" && \
-    ls -lh ethereal-musl && \
-    file ethereal-musl && \
+    ls -lh wafter-musl && \
+    file wafter-musl && \
     echo "--- Hardening checks ---" && \
-    { file ethereal-musl | grep -qE 'stripped|no section header' && echo "  PASS: stripped" || echo "  FAIL: not stripped"; } && \
-    { test -f ethereal-musl.sha256 && echo "  PASS: integrity hash present" || echo "  FAIL: no hash"; } && \
+    { file wafter-musl | grep -qE 'stripped|no section header' && echo "  PASS: stripped" || echo "  FAIL: not stripped"; } && \
+    { test -f wafter-musl.sha256 && echo "  PASS: integrity hash present" || echo "  FAIL: no hash"; } && \
     echo "--- Path leak check ---" && \
-    count=$(strings ethereal-musl | grep -c '/home/' || true) && \
+    count=$(strings wafter-musl | grep -c '/home/' || true) && \
     { [ "$count" -gt 0 ] && echo "  WARNING: home paths found ($count)" || echo "  PASS: no home path leaks"; }
 
 # Output
 FROM ubuntu:24.04
-COPY --from=builder /build/mine/jerboa-ethereal/ethereal-musl /out/ethereal-musl
-COPY --from=builder /build/mine/jerboa-ethereal/ethereal-musl.sha256 /out/ethereal-musl.sha256
-CMD ["cat", "/out/ethereal-musl"]
+COPY --from=builder /build/mine/jerboa-ethereal/wafter-musl /out/wafter-musl
+COPY --from=builder /build/mine/jerboa-ethereal/wafter-musl.sha256 /out/wafter-musl.sha256
+CMD ["cat", "/out/wafter-musl"]
 ```
 
 **Key points**:
@@ -97,13 +97,13 @@ CMD ["cat", "/out/ethereal-musl"]
 
 ## Phase 2: Build Scripts
 
-### `build-ethereal-musl.sh`
+### `build-wafter-musl.sh`
 
 Orchestrates the build process:
 
 ```bash
 #!/bin/bash
-# build-ethereal-musl.sh — Build ethereal as a fully static binary
+# build-wafter-musl.sh — Build ethereal as a fully static binary
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -119,21 +119,21 @@ echo "[1/2] Validating musl toolchain..."
 echo "  musl-gcc: $(command -v musl-gcc)"
 
 echo "[2/2] Running musl build..."
-scheme -q --libdirs "${SCRIPT_DIR}:${JERBOA_LIB}" --script build-ethereal-musl.ss
+scheme -q --libdirs "${SCRIPT_DIR}:${JERBOA_LIB}" --script build-wafter-musl.ss
 
 # Verify
-[ -f "ethereal-musl" ] || { echo "ERROR: ethereal-musl not created"; exit 1; }
+[ -f "wafter-musl" ] || { echo "ERROR: wafter-musl not created"; exit 1; }
 
 echo ""
-echo "=== ethereal-musl built successfully! ==="
-ls -lh ethereal-musl
-file ethereal-musl
-ldd ethereal-musl 2>&1 || echo "  (Fully static — no dynamic dependencies)"
+echo "=== wafter-musl built successfully! ==="
+ls -lh wafter-musl
+file wafter-musl
+ldd wafter-musl 2>&1 || echo "  (Fully static — no dynamic dependencies)"
 echo ""
-echo "Test: ./ethereal-musl --version"
+echo "Test: ./wafter-musl --version"
 ```
 
-### `build-ethereal-musl.ss`
+### `build-wafter-musl.ss`
 
 Chez Scheme build orchestrator (similar to gitsafe pattern):
 
@@ -174,26 +174,26 @@ linux: docker
 
 # Build locally (requires musl-gcc + musl Chez)
 linux-local:
-	JERBOA_HOME=$(JERBOA_HOME) ./build-ethereal-musl.sh
+	JERBOA_HOME=$(JERBOA_HOME) ./build-wafter-musl.sh
 
 # Docker build
 docker:
 	docker build --platform linux/amd64 -t ethereal-builder .
 	id=$$(docker create --platform linux/amd64 ethereal-builder) && \
-	docker cp $$id:/out/ethereal-musl ./ethereal-musl && \
-	docker cp $$id:/out/ethereal-musl.sha256 ./ethereal-musl.sha256 && \
+	docker cp $$id:/out/wafter-musl ./wafter-musl && \
+	docker cp $$id:/out/wafter-musl.sha256 ./wafter-musl.sha256 && \
 	docker rm $$id >/dev/null && \
-	chmod +x ethereal-musl
+	chmod +x wafter-musl
 	@echo ""
-	@ls -lh ethereal-musl
+	@ls -lh wafter-musl
 
 # Verify binary hardening
 verify-harden: linux
 	@echo "=== Binary Hardening Verification ==="
-	@(file ethereal-musl | grep -qE 'stripped|no section header') && echo "  PASS: binary is stripped" || echo "  FAIL: not stripped"
-	@if strings ethereal-musl | grep -q "$(HOME)"; then echo "  WARN: home paths found"; else echo "  PASS: no home paths"; fi
-	@[ -f ethereal-musl.sha256 ] && echo "  PASS: SHA256 hash exists" || echo "  FAIL: no hash"
-	@./ethereal-musl --version >/dev/null 2>&1 && echo "  PASS: binary runs" || echo "  FAIL: doesn't run"
+	@(file wafter-musl | grep -qE 'stripped|no section header') && echo "  PASS: binary is stripped" || echo "  FAIL: not stripped"
+	@if strings wafter-musl | grep -q "$(HOME)"; then echo "  WARN: home paths found"; else echo "  PASS: no home paths"; fi
+	@[ -f wafter-musl.sha256 ] && echo "  PASS: SHA256 hash exists" || echo "  FAIL: no hash"
+	@./wafter-musl --version >/dev/null 2>&1 && echo "  PASS: binary runs" || echo "  FAIL: doesn't run"
 ```
 
 ---
@@ -227,7 +227,7 @@ This Jerboa code is compiled to `.so`, then embedded in the static binary.
 
 ### `ethereal-main.c` (Generated)
 
-Generated by `build-ethereal-musl.ss`:
+Generated by `build-wafter-musl.ss`:
 
 ```c
 /* Auto-generated by build process */
@@ -262,8 +262,8 @@ $ make build             # Compile to .so
 ```bash
 $ make linux             # Build static binary via Docker
 $ make verify-harden     # Verify hardening (stripped, no leaks, runs)
-$ ./ethereal-musl --version
-$ ./ethereal-musl dissect test-pcap.pcap  # Smoke test
+$ ./wafter-musl --version
+$ ./wafter-musl dissect test-pcap.pcap  # Smoke test
 ```
 
 ---
@@ -284,15 +284,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Build ethereal-musl
+      - name: Build wafter-musl
         run: make docker
       - name: Verify binary
         run: make verify-harden
       - name: Upload to release
         uses: actions/upload-release-asset@v1
         with:
-          asset_path: ./ethereal-musl
-          asset_name: ethereal-musl-x86_64
+          asset_path: ./wafter-musl
+          asset_name: wafter-musl-x86_64
 ```
 
 ---
@@ -304,20 +304,20 @@ jobs:
 ```
 releases/
 ├── v1.0.0/
-│   ├── ethereal-musl                  # Executable binary
-│   ├── ethereal-musl.sha256           # Integrity hash
-│   ├── ethereal-musl.asc              # GPG signature (future)
+│   ├── wafter-musl                  # Executable binary
+│   ├── wafter-musl.sha256           # Integrity hash
+│   ├── wafter-musl.asc              # GPG signature (future)
 │   └── CHECKSUMS                      # All hashes
 ```
 
 ### User Verification
 
 ```bash
-$ curl -O https://github.com/.../releases/ethereal-musl
-$ curl -O https://github.com/.../releases/ethereal-musl.sha256
-$ sha256sum -c ethereal-musl.sha256
-$ chmod +x ethereal-musl
-$ ./ethereal-musl --version
+$ curl -O https://github.com/.../releases/wafter-musl
+$ curl -O https://github.com/.../releases/wafter-musl.sha256
+$ sha256sum -c wafter-musl.sha256
+$ chmod +x wafter-musl
+$ ./wafter-musl --version
 ```
 
 ---
@@ -334,8 +334,8 @@ $ ./ethereal-musl --version
 ### Build Infrastructure
 
 - [ ] Create `Dockerfile` (multi-stage, jerboa21/jerboa base)
-- [ ] Create `build-ethereal-musl.sh` (shell orchestrator)
-- [ ] Create `build-ethereal-musl.ss` (Chez build script)
+- [ ] Create `build-wafter-musl.sh` (shell orchestrator)
+- [ ] Create `build-wafter-musl.ss` (Chez build script)
 - [ ] Create `ethereal-main.c` template (or generate dynamically)
 - [ ] Add Makefile targets: `linux`, `linux-local`, `docker`, `verify-harden`
 

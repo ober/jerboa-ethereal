@@ -312,7 +312,7 @@ ping -c 1 192.168.1.1
 tcpdump -w icmp.pcap icmp
 
 # Later: read with our dissector
-./ethereal-musl icmp.pcap | head -20
+./wafter-musl icmp.pcap | head -20
 ```
 
 ## Commands to Get Started

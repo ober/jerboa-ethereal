@@ -141,7 +141,7 @@
 
 (def (generate-build-list)
   "Generate list of files to compile for static binary
-   Used by build-ethereal-musl.ss"
+   Used by build-wafter-musl.ss"
 
   (map (lambda (entry)
          (let ((file (car (cddddr entry))))

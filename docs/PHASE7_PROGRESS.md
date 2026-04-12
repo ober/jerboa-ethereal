@@ -94,14 +94,14 @@ Create multi-stage Dockerfile that:
 Create shell and Scheme build orchestrators.
 
 **Checklist**:
-- [ ] Complete `build-ethereal-musl.sh` (shell orchestrator)
-- [ ] Complete `build-ethereal-musl.ss` (Chez build script)
+- [ ] Complete `build-wafter-musl.sh` (shell orchestrator)
+- [ ] Complete `build-wafter-musl.ss` (Chez build script)
 - [ ] Test local build: `make linux-local`
 - [ ] Handle errors gracefully
 
 **Files to Modify**:
-- `build-ethereal-musl.sh` (complete implementation)
-- `build-ethereal-musl.ss` (complete implementation)
+- `build-wafter-musl.sh` (complete implementation)
+- `build-wafter-musl.ss` (complete implementation)
 
 ---
 

@@ -91,13 +91,13 @@
 
 ## Static Binary Build Pipeline
 
-### Step 1: Compile Phase (build-ethereal-musl.ss)
+### Step 1: Compile Phase (build-wafter-musl.ss)
 
 **Input**: Source code + manifest  
 **Output**: `.so` and `.wpo` files for each dissector
 
 ```scheme
-;; Pseudocode from build-ethereal-musl.ss
+;; Pseudocode from build-wafter-musl.ss
 
 (for-each (lambda (dissector)
             (compile-dissector dissector 
@@ -203,7 +203,7 @@ FROM jerboa21/jerboa AS builder
 COPY . /build/jerboa-ethereal
 WORKDIR /build/jerboa-ethereal
 RUN JERBOA_HOME=/opt/jerboa \
-    scheme --script build-ethereal-musl.ss
+    scheme --script build-wafter-musl.ss
 
 # Stage 2: Runtime (minimal)
 FROM ubuntu:24.04
@@ -216,7 +216,7 @@ ENTRYPOINT ["/usr/local/bin/wafter-musl"]
 ```bash
 $ make docker                    # Or: make linux-local
 
-→ build-ethereal-musl.ss runs in musl Chez
+→ build-wafter-musl.ss runs in musl Chez
   
 → Step 1: Check prerequisites
   ✓ musl-gcc found
@@ -260,7 +260,7 @@ $ make docker                    # Or: make linux-local
 | `lib/dissector/pipeline.ss` | Protocol chaining | 5 |
 | `dissectors/*.ss` | Individual dissectors (13 files) | 5-6 |
 | `tools/wafter.ss` | CLI tool | 5 |
-| `build-ethereal-musl.ss` | Build orchestrator | 7 |
+| `build-wafter-musl.ss` | Build orchestrator | 7 |
 | `wafter-main.c` | C entry point (generated) | 7 |
 | `Dockerfile` | Docker multi-stage build | 7 |
 | `Makefile` | Build targets | 7 |
@@ -400,4 +400,4 @@ Phase 7 implements the complete infrastructure for:
 
 ---
 
-**Next Step**: Implement the build compilation phase (Step 2 in build-ethereal-musl.ss)
+**Next Step**: Implement the build compilation phase (Step 2 in build-wafter-musl.ss)
