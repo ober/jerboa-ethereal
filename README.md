@@ -13,8 +13,14 @@ make build         # Compile all modules (when ready)
 make test          # Run test suite (when ready)
 ```
 
+## ⚠️ Important
+
+**This repository is 100% Jerboa (`.ss` files only).** No `.sls`, no Chez internals.
+See **[JERBOA_ONLY.md](JERBOA_ONLY.md)** for rules and constraints.
+
 ## Structure
 
+- **`JERBOA_ONLY.md`** — ⚠️ **READ THIS FIRST** — Jerboa-only coding rules
 - **`PLAN.md`** — Comprehensive 9-phase implementation plan (22+ weeks)
 - **`DIRECTORY_STRUCTURE.md`** — Detailed explanation of project layout
 - **`lib/dissector/`** — Core dissection engine and data structures
