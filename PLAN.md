@@ -533,6 +533,57 @@ Acknowledge TLS limitations, provide metadata extraction, detect patterns.
 
 ---
 
+## Phase 7-Static: Static Binary Builds (2-3 weeks)
+
+**When**: After Phase 5 (pcap tools) complete, before Phase 8 (testing)
+
+### Goal
+Build fully static, zero-dependency Linux binaries for `ethereal` CLI using Docker + musl libc. Users can download a single executable and immediately use it, no Chez/Jerboa installation required.
+
+### 7-Static.1 Docker Setup
+- [ ] **Create Dockerfile** (multi-stage, based on `jerboa21/jerboa`)
+  - Stage 1 (builder): Compile all modules, build binary
+  - Stage 2 (output): Minimal ubuntu:24.04, extract binary only
+  - Verify in builder: runs, no path leaks, stripped
+
+- [ ] **Create build-ethereal-musl.sh** (shell orchestrator)
+  - Resolve Jerboa path
+  - Check musl-gcc availability
+  - Invoke Chez build script
+  - Verify binary (file, ldd, run)
+
+- [ ] **Create build-ethereal-musl.ss** (Chez build script)
+  - Locate musl Chez at ~/chez-musl
+  - Compile all dissector modules (optimize-level 3, WPO)
+  - Generate ethereal-main.c (C entry point)
+  - Invoke musl-gcc to compile C + link static libraries
+  - Strip binary, generate SHA256 hash
+
+### 7-Static.2 Makefile Integration
+- [ ] **Add Makefile targets**
+  - `make linux`: Build via Docker (canonical)
+  - `make linux-local`: Build locally (requires musl-gcc)
+  - `make docker`: Run Docker build directly
+  - `make verify-harden`: Verify binary (stripped, no leaks, runs)
+
+- [ ] **Clean target** removes ethereal-musl and .sha256
+
+### 7-Static.3 Verification & Hardening
+- [ ] **Binary verification**
+  - Check stripped (no debug symbols)
+  - Check fully static (no dynamic dependencies)
+  - Check no home directory paths leaked
+  - Verify runs on target system (Ubuntu 24.04)
+  - Generate SHA256 integrity hash
+
+### 7-Static.4 Distribution Setup
+- [ ] **Prepare artifacts**
+  - ethereal-musl (executable binary)
+  - ethereal-musl.sha256 (integrity hash)
+  - CHECKSUMS file (all artifacts)
+
+---
+
 ## Phase 8: Validation, Testing & Optimization (3-4 weeks)
 
 ### Goal
@@ -671,13 +722,19 @@ Keep Jerboa dissectors in sync with upstream Wireshark changes.
 - Demo: high-performance pcap processing with name resolution
 - Deliverable: `lib/name-resolver/`, performance benchmarks
 
-### Milestone 5 (Weeks 18-21): Testing & Validation
+### Milestone 5 (Weeks 18-20): Static Binary Build
+- Phase 7-Static complete: Docker build, musl static linking, verification
+- Build `ethereal-musl` (fully static, zero dependencies)
+- Demo: users download single binary and run immediately
+- Deliverable: Dockerfile, build scripts, ethereal-musl binary, SHA256 hash
+
+### Milestone 6 (Weeks 21-24): Testing & Validation
 - Phase 8 complete: comprehensive test suite, benchmarking, security audit
 - 500+ dissectors ported and tested
 - Compare performance against Wireshark on benchmark pcap
 - Deliverable: test suite, benchmark results, security report
 
-### Milestone 6 (Weeks 22+): Release & Continuous Sync
+### Milestone 7 (Weeks 25+): Release & Continuous Sync
 - Phase 9: ongoing integration with Wireshark upstream
 - Release v1.0 with 500-1000 dissectors
 - Establish update pipeline for new Wireshark versions
