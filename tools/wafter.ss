@@ -1,5 +1,5 @@
 #!/usr/bin/env scheme
-;; jerboa-ethereal - PCAP analyzer tool
+;; wafter - PCAP analyzer tool
 ;; Phase 6: Extended protocols, flow analysis, and statistics
 
 (import (jerboa prelude))
@@ -52,10 +52,10 @@
 
 (def (show-help)
   (displayln "")
-  (displayln "jerboa-ethereal - PCAP packet analyzer")
+  (displayln "wafter - PCAP packet analyzer")
   (displayln "════════════════════════════════════════════════════════════")
   (displayln "")
-  (displayln "Usage: scheme ethereal.ss <pcap-file> <command>")
+  (displayln "Usage: scheme wafter.ss <pcap-file> <command>")
   (displayln "")
   (displayln "Commands:")
   (displayln "  stats       - Show basic statistics")
@@ -63,7 +63,7 @@
   (displayln "  protocols   - Count packets by protocol layer")
   (displayln "")
   (displayln "Example:")
-  (displayln "  scheme ethereal.ss capture.pcap stats")
+  (displayln "  scheme wafter.ss capture.pcap stats")
   (displayln "")
   (displayln "Phase 6 Status: Extended protocols, flow analysis, statistics")
   (displayln "")
