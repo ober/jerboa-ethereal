@@ -169,31 +169,115 @@
     (catch (e)
       (err (str "DNS parse error: " e)))))
 
-;; ── Export Helpers ────────────────────────────────────────────────────
+;; ── Domain Name Decompression ────────────────────────────────────
+
+(def (decompress-domain-name buffer offset)
+  "Decompress DNS domain name from buffer starting at offset
+   Returns (name new-offset) or (err message)
+   Handles both literal names and message compression pointers (RFC 1035)"
+
+  (let loop ((offset offset)
+             (labels '())
+             (max-iterations 255))
+
+    (if (<= max-iterations 0)
+        (err "Domain name decompression: maximum iterations exceeded")
+        (if (>= offset (bytevector-length buffer))
+            (err "Domain name: offset beyond buffer end")
+            (let ((len-byte-res (read-u8 buffer offset)))
+              (if (err? len-byte-res)
+                  len-byte-res
+                  (let ((len-byte (unwrap len-byte-res)))
+                    (cond
+                      ;; End of name (length 0)
+                      ((= len-byte 0)
+                       (ok (cons (string-join (reverse labels) ".") (+ offset 1))))
+
+                      ;; Pointer (high 2 bits are 11)
+                      ((>= len-byte #xC0)
+                       (if (>= (+ offset 1) (bytevector-length buffer))
+                           (err "Domain name: incomplete pointer")
+                           (let ((ptr-res (read-u16be buffer offset)))
+                             (if (err? ptr-res)
+                                 ptr-res
+                                 (let* ((ptr-word (unwrap ptr-res))
+                                        (ptr-offset (bitwise-and ptr-word #x3FFF)))
+                                   ;; Recursively decompress at pointer offset, then continue
+                                   (match (decompress-domain-name buffer ptr-offset)
+                                     ((ok (cons ptr-name _))
+                                      (ok (cons (if (null? labels)
+                                                   ptr-name
+                                                   (str (string-join (reverse labels) ".") "." ptr-name))
+                                               (+ offset 2))))
+                                     ((err e) (err e))))))))
+
+                      ;; Normal label (length < 64)
+                      ((< len-byte 64)
+                       (if (> (+ offset 1 len-byte) (bytevector-length buffer))
+                           (err "Domain name: label extends beyond buffer")
+                           (let ((label-bytes (unwrap (slice buffer (+ offset 1) len-byte))))
+                             (try
+                               (let ((label-str (bytevector->string label-bytes
+                                                                    (make-transcoder (utf-8-codec)))))
+                                 (loop (+ offset 1 len-byte)
+                                      (cons label-str labels)
+                                      (- max-iterations 1)))
+                               (catch (e) (err "Domain name: invalid label encoding"))))))
+
+                      ;; Invalid (reserved bits)
+                      (else
+                       (err (str "Domain name: invalid length byte " len-byte))))))))))
+
+;; ── Record Extraction ──────────────────────────────────────────────
 
 (def (extract-dns-question buffer offset)
   "Extract single DNS question from buffer
-   Returns (question-name question-type question-class new-offset) or error"
-  ;; Note: Full implementation requires domain name decompression
-  ;; This is a stub for the header-only version
-  (values #f 0 1 offset))
+   Returns (name type class new-offset) or error"
+
+  (match (decompress-domain-name buffer offset)
+    ((ok (cons qname new-offset))
+     (if (> (+ new-offset 4) (bytevector-length buffer))
+         (err "Question: incomplete type/class fields")
+         (let ((type-res (read-u16be buffer new-offset))
+               (class-res (read-u16be buffer (+ new-offset 2))))
+           (match (list type-res class-res)
+             ((list (ok qtype) (ok qclass))
+              (ok (list qname qtype qclass (+ new-offset 4))))
+             (_ (err "Question: invalid type or class"))))))
+    ((err e) (err (str "Question: " e)))))
 
 (def (extract-dns-answer buffer offset)
   "Extract single DNS answer RR from buffer
    Returns (name type class ttl rdlength rdata new-offset) or error"
-  ;; Note: Full implementation requires domain name decompression
-  ;; This is a stub for the header-only version
-  (values #f 0 1 0 0 #f offset))
+
+  (match (decompress-domain-name buffer offset)
+    ((ok (cons rname new-offset))
+     (if (> (+ new-offset 10) (bytevector-length buffer))
+         (err "Answer: incomplete type/class/ttl/rdlen fields")
+         (let ((type-res (read-u16be buffer new-offset))
+               (class-res (read-u16be buffer (+ new-offset 2)))
+               (ttl-res (read-u32be buffer (+ new-offset 4)))
+               (rdlen-res (read-u16be buffer (+ new-offset 8))))
+           (match (list type-res class-res ttl-res rdlen-res)
+             ((list (ok rtype) (ok rclass) (ok rttl) (ok rdlen))
+              (if (> (+ new-offset 10 rdlen) (bytevector-length buffer))
+                  (err "Answer: rdata extends beyond buffer")
+                  (let ((rdata (unwrap (slice buffer (+ new-offset 10) rdlen))))
+                    (ok (list rname rtype rclass rttl rdlen rdata
+                             (+ new-offset 10 rdlen))))))
+             (_ (err "Answer: invalid fields"))))))
+    ((err e) (err (str "Answer: " e)))))
 
 ;; ── Exported API ───────────────────────────────────────────────────────
 
-;; dissect-dns: main entry point
+;; dissect-dns: main entry point - parses 12-byte header and flags
+;; decompress-domain-name: RFC 1035 compression pointer handling
+;; extract-dns-question: parse DNS question (name, type, class)
+;; extract-dns-answer: parse DNS answer RR (name, type, class, TTL, rdata)
 ;; format-dns-opcode: opcode formatter
 ;; format-dns-rcode: response code formatter
 ;; format-dns-type: record type formatter
 ;; format-dns-class: record class formatter
 ;;
-;; Note: Full DNS dissection (including domain name decompression,
-;;       question/answer/authority/additional sections) is complex
-;;       and will be implemented in Phase 6.
-;;       This version handles the 12-byte header and flags only.
+;; Phase 6 Complete: Full DNS dissection with domain name decompression,
+;;                   RFC 1035 compression pointers, and record extraction
