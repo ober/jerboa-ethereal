@@ -94,27 +94,37 @@ Key Improvements:
 - ✓ Safe for concurrent parsing, no shared state
 - ✓ Code is readable and verifiable
 
-## Next Phase: Phase 5 (Weeks 9-10)
+## Phase 5: Tool Building & Integration (Weeks 9-10) - IN PROGRESS
 
-**Tool Building & Integration**
+**Completed in Phase 5:**
+- ✓ **TCP Dissector** (dissectors/tcp.ss): 140 lines, handles variable options, 8 flags, proper validation
+- ✓ **Dissection Pipeline** (lib/dissector/pipeline.ss): 150+ lines
+  - `dissect-protocol-chain`: recursive protocol chaining
+  - `find-next-protocol`: automatic protocol discovery from fields
+  - `display-packet`: pretty-printed nested protocol output
+  - Protocol registry: `register-protocol!`, `get-dissector`
+- ✓ **End-to-End Demo** (demo-standalone.ss): 
+  - Shows complete packet construction at L2/L3/L4
+  - Visualizes nested Ethernet → IPv4 → TCP structure
+  - Demonstrates what dissection output looks like
+  - Successfully runs with Jerboa/Chez Scheme
 
-Priority tasks:
-1. **Module System**: Compile dissectors to .so libraries
-2. **Dissection Pipeline**: Chain protocols (Eth → IPv4 → UDP)
-3. **Packet Demo**: Parse and display real packet data
-4. **TCP Dissector**: Handle complex option parsing
-5. **Error Recovery**: Partial dissection on malformed data
-6. **Formatter Integration**: Combine output from chained protocols
-7. **Test Suite**: Unit tests for all dissectors
+**Remaining Phase 5 tasks:**
+1. Build system (build.ss for compiling dissectors to .so)
+2. Module system (.so library compilation)
+3. Error recovery: Partial dissection on malformed data
+4. Test suite: Unit tests for all dissectors
+5. PCAP file reader
 
 ## Metrics
 
-- **Lines of Code**: ~600 (DSL + engine)
-- **Modules**: 7 (types, parser, formatters, engine, 3 dissectors)
+- **Lines of Code**: ~1,200 (Phase 4-5 dissectors + pipeline + engine)
+- **Modules**: 9 (protocol.ss, 4 dissectors, pipeline.ss, 2 demos, engine.ss)
+- **Dissectors**: 4 complete (Ethernet, IPv4, UDP, TCP)
 - **Formatters**: 4 (IPv4, hex, port, default)
 - **Field Types**: 9 (u8, u16be/le, u32be/le, u64be/le, bytes, string, bitfield)
-- **Test Status**: All modules compile, demo shows sample packet construction
-- **Documentation**: 5 files (PLAN.md, DSL_DESIGN.md, BUILD_STATIC.md, PHASE3_COMPLETION.md, STATUS.md)
+- **Test Status**: All dissectors compile, demos work end-to-end
+- **Documentation**: 6 files (PLAN.md, DSL_EXAMPLES.md, BUILD_STATIC.md, PHASE4_REDESIGN.md, STATUS.md, + code comments)
 
 ## Known Limitations (Phase 3)
 
