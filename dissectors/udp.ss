@@ -1,58 +1,53 @@
 ;; jerboa-ethereal/dissectors/udp.ss
-;; RFC 768: User Datagram Protocol (UDP) dissector
+;; RFC 768: User Datagram Protocol
 ;;
-;; Layer 4 transport-layer protocol.
-;; Provides connectionless, unreliable datagram delivery.
+;; Simple, safe UDP dissector.
 
-(import (jerboa prelude))
+(import (jerboa prelude)
+        (lib dissector protocol))
 
-;; UDP protocol definition
-(def udp-protocol
-  '(defprotocol udp
-     :description "RFC 768: User Datagram Protocol"
-     :field-specs (
-       (src-port u16be :formatter format-port :desc "Source port")
-       (dst-port u16be :formatter format-port :desc "Destination port")
-       (length u16be :desc "UDP length (header + payload)")
-       (checksum u16be :formatter format-hex :desc "Checksum")
-       (payload bytes :size (- length 8) :desc "UDP payload data"))))
+(def (dissect-udp buffer)
+  "Parse UDP datagram from bytevector
+   Returns (ok fields) or (err message)
 
-;; Well-known UDP service ports
-(def udp-services
-  (alist
-    (53 "dns")
-    (67 "dhcp-server")
-    (68 "dhcp-client")
-    (69 "tftp")
-    (123 "ntp")
-    (161 "snmp")
-    (162 "snmp-trap")
-    (389 "ldap")
-    (514 "syslog")
-    (631 "ipp")
-    (1194 "openvpn")))
+   Structure (8-byte minimum):
+   [0:2)   source port
+   [2:4)   destination port
+   [4:6)   length (total datagram length)
+   [6:8)   checksum
+   [8:)    payload"
 
-(def (format-port port)
-  "Format port number with service name if known
-   Example: 53 -> \"dns (53)\", 12345 -> \"12345\""
-  (let ([service (assoc-in udp-services port)])
-    (if service
-        (str (cdr service) " (" port ")")
-        (str port))))
+  (try-result
+    (let* ((src-port-res (read-u16be buffer 0))
+           (src-port (unwrap src-port-res))
 
-;; TCP/UDP common ports
-(def (format-hex value)
-  "Format as hexadecimal"
-  (cond
-    [(integer? value) (format "0x~4,'0x" value)]
-    [(bytevector? value)
-     (str "0x"
-       (string-join
-         (for/collect ([b (in-bytes value)])
-           (format "~2,'0x" b)) ""))]
-    [else (str value)]))
+           (dst-port-res (read-u16be buffer 2))
+           (dst-port (unwrap dst-port-res))
 
-;; Exported API
-;; udp-protocol: the protocol definition
-;; format-port, format-hex: formatters
-;; udp-services: well-known port names
+           (length-res (read-u16be buffer 4))
+           (udp-length (unwrap length-res))
+           (_ (unwrap (validate (>= udp-length 8) "UDP length too small")))
+
+           (checksum-res (read-u16be buffer 6))
+           (checksum (unwrap checksum-res))
+
+           (payload-len (max 0 (- udp-length 8)))
+           (payload (unwrap (slice buffer 8 payload-len))))
+
+      ;; Return structured datagram
+      (ok `((src-port . ((raw . ,src-port)
+                        (formatted . ,(fmt-port src-port))))
+            (dst-port . ((raw . ,dst-port)
+                        (formatted . ,(fmt-port dst-port))))
+            (length . ,udp-length)
+            (checksum . ((raw . ,checksum)
+                        (formatted . ,(fmt-hex checksum))))
+            (payload . ,payload))))
+
+    ;; Clear error handling
+    (catch (e)
+      (err (str "UDP parse error: " e)))))
+
+;; ── Exported API ───────────────────────────────────────────────────────────
+
+;; dissect-udp: main entry point

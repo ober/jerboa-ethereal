@@ -1,51 +1,64 @@
 ;; jerboa-ethereal/dissectors/ethernet.ss
-;; IEEE 802.3 Ethernet Frame dissector
+;; IEEE 802.3 Ethernet Frame
 ;;
-;; Layer 2 link-layer protocol. Every packet starts here.
-;; Format:
-;;   Destination MAC (6 bytes)
-;;   Source MAC (6 bytes)
-;;   EtherType (2 bytes) → determines payload protocol
-;;   Payload (variable)
+;; Clean, safe dissector with zero boilerplate.
+;; Returns (ok packet-data) or (err message) on any issue.
 
-(import (jerboa prelude))
+(import (jerboa prelude)
+        (lib dissector protocol))
 
-;; Ethernet protocol definition
-(def ethernet-protocol
-  '(defprotocol ethernet
-     :description "IEEE 802.3 Ethernet Frame (Layer 2)"
-     :field-specs (
-       (dest-mac u48be :formatter format-mac :desc "Destination MAC address")
-       (src-mac u48be :formatter format-mac :desc "Source MAC address")
-       (type u16be :formatter format-ethertype :desc "EtherType: determines payload protocol")
-       (payload bytes :size (- buffer-length 14) :desc "Payload (IP, ARP, VLAN, etc.)"))))
+(def (dissect-ethernet buffer)
+  "Parse Ethernet frame from bytevector
+   Returns (ok fields) or (err message)
 
-;; Well-known EtherType values
-(def ethertype-names
-  (alist
-    (#x0800 "IPv4")
-    (#x0806 "ARP")
-    (#x0835 "RARP")
-    (#x86DD "IPv6")
-    (#x8100 "VLAN")
-    (#x8847 "MPLS")
-    (#x888E "802.1X")))
+   Handles:
+   - Truncated frames
+   - Corrupt fields
+   - Any bytevector size
+
+   Structure:
+   [0:6)   dest MAC (6 bytes)
+   [6:12)  src MAC (6 bytes)
+   [12:14) EtherType (2 bytes, big-endian)
+   [14:)   payload (variable)"
+
+  (try-result
+    ;; Parse each field with error propagation
+    (let* ((dest-mac (unwrap (slice buffer 0 6)))
+           (src-mac (unwrap (slice buffer 6 6)))
+           (etype-result (read-u16be buffer 12))
+           (etype (unwrap etype-result))
+           (payload (unwrap (slice buffer 14
+                                   (max 0 (- (bytevector-length buffer) 14))))))
+
+      ;; Return structured packet
+      (ok `((dest-mac . ((raw . ,dest-mac)
+                        (formatted . ,(fmt-mac dest-mac))))
+            (src-mac . ((raw . ,src-mac)
+                       (formatted . ,(fmt-mac src-mac))))
+            (etype . ((raw . ,etype)
+                     (formatted . ,(format-ethertype etype))
+                     (next-protocol . ,(ethertype->protocol etype))))
+            (payload . ,payload))))
+
+    ;; Catch ANY error and return structured message
+    (catch (e)
+      (err (str "Ethernet parse error: " e)))))
+
+;; ── EtherType Formatter ────────────────────────────────────────────────────
 
 (def (format-ethertype type)
-  "Format EtherType value with name if known
-   Example: #x0800 -> \"IPv4 (0x0800)\""
-  (let ([name (assoc-in ethertype-names type)])
-    (if name
-        (str (cdr name) " (0x" (format "~4,'0x" type) ")")
-        (str "0x" (format "~4,'0x" type)))))
+  "Format EtherType value with name and hex"
+  (cond
+    ((= type #x0800) "IPv4 (0x0800)")
+    ((= type #x0806) "ARP (0x0806)")
+    ((= type #x86DD) "IPv6 (0x86DD)")
+    ((= type #x8100) "VLAN (0x8100)")
+    ((= type #x8847) "MPLS (0x8847)")
+    ((= type #x888E) "802.1X (0x888E)")
+    (#t (format "Unknown (0x~4,'0x)" type))))
 
-;; Protocol registration (will be used by dissection engine)
-;; (register-dissector-handler 'ethernet 'link-type 1)
-;; (register-ethertype-handler #x0800 'ipv4)
-;; (register-ethertype-handler #x0806 'arp)
-;; (register-ethertype-handler #x86DD 'ipv6)
+;; ── Exported API ───────────────────────────────────────────────────────────
 
-;; Exported API
-;; ethernet-protocol: the protocol definition
-;; format-ethertype: formatter for EtherType field
-;; ethertype-names: alist of well-known values
+;; dissect-ethernet: main entry point
+;; format-ethertype: formatter for display

@@ -1,92 +1,146 @@
 ;; jerboa-ethereal/dissectors/ipv4.ss
-;; RFC 791: Internet Protocol Version 4 (IPv4) dissector
+;; RFC 791: Internet Protocol Version 4
 ;;
-;; Layer 3 network-layer protocol.
-;; Provides source/destination IP addresses and routing.
+;; Production dissector with inline safety and error handling.
 
-(import (jerboa prelude))
+(import (jerboa prelude)
+        (lib dissector protocol))
 
-;; IPv4 protocol definition
-(def ipv4-protocol
-  '(defprotocol ipv4
-     :description "RFC 791: Internet Protocol Version 4"
-     :field-specs (
-       ;; First byte: version (4 bits) + IHL (4 bits)
-       (version u8 :mask 0xF0 :shift 4 :desc "IP version (4 for IPv4)")
-       (ihl u8 :mask 0x0F :desc "Internet Header Length (32-bit words)")
+(def (dissect-ipv4 buffer)
+  "Parse IPv4 packet from bytevector
+   Returns (ok fields) or (err message)
 
-       ;; DSCP + ECN
-       (dscp u8 :mask 0xFC :shift 2 :desc "Differentiated Services Code Point")
-       (ecn u8 :mask 0x03 :desc "Explicit Congestion Notification")
+   Handles:
+   - Truncated packets
+   - Invalid version/IHL
+   - Corrupt headers
+   - Any bytevector size
 
-       ;; Packet sizing
-       (total-length u16be :desc "Total length including header and payload")
-       (identification u16be :formatter format-hex :desc "Packet ID for reassembly")
+   Structure (20-byte minimum):
+   [0]     version (4b) + IHL (4b)
+   [1]     DSCP (6b) + ECN (2b)
+   [2:4)   total length
+   [4:6)   identification
+   [6:8)   flags + fragment offset
+   [8]     TTL
+   [9]     protocol number
+   [10:12) header checksum
+   [12:16) source IP
+   [16:20) destination IP
+   [20:)   options (if IHL > 5) + payload"
 
-       ;; Flags + Fragment Offset
-       (flags u8 :mask 0xE0 :shift 5 :formatter format-ipv4-flags :desc "DF, MF flags")
-       (fragment-offset u16be :mask 0x1FFF :desc "Fragment offset (8-byte units)")
+  (try-result
+    ;; Byte 0: version + IHL
+    (let* ((b0-res (read-u8 buffer 0))
+           (b0 (unwrap b0-res))
+           (version (extract-bits b0 #xF0 4))
+           (ihl (extract-bits b0 #x0F 0))
 
-       ;; TTL + Protocol
-       (ttl u8 :desc "Time to Live (hop limit)")
-       (protocol u8 :formatter format-ip-protocol :desc "Protocol number")
+           ;; Validate version and IHL
+           (_ (unwrap (validate (= version 4) "Invalid IPv4 version")))
+           (_ (unwrap (validate (>= ihl 5) "IHL too small")))
 
-       ;; Checksum
-       (header-checksum u16be :formatter format-hex :desc "Header checksum")
+           ;; Byte 1: DSCP + ECN
+           (b1-res (read-u8 buffer 1))
+           (b1 (unwrap b1-res))
+           (dscp (extract-bits b1 #xFC 2))
+           (ecn (extract-bits b1 #x03 0))
 
-       ;; Addresses
-       (src-ip u32be :formatter format-ipv4 :desc "Source IP address")
-       (dst-ip u32be :formatter format-ipv4 :desc "Destination IP address")
+           ;; Bytes 2-3: Total length
+           (tlen-res (read-u16be buffer 2))
+           (total-length (unwrap tlen-res))
+           (_ (unwrap (validate (>= total-length 20) "Packet too short")))
 
-       ;; Options (only if IHL > 5)
-       (options bytes :size (* (- ihl 5) 4) :conditional (> ihl 5)
-        :desc "Options (variable length)")
+           ;; Bytes 4-5: Identification
+           (id-res (read-u16be buffer 4))
+           (id (unwrap id-res))
 
-       ;; Payload determined by protocol field
-       (payload bytes :size (- total-length (* ihl 4)) :desc "Encapsulated payload"))))
+           ;; Bytes 6-7: Flags + Fragment Offset
+           (flags-res (read-u16be buffer 6))
+           (flags-word (unwrap flags-res))
+           (df-flag (extract-bits flags-word #x4000 14))
+           (mf-flag (extract-bits flags-word #x2000 13))
+           (frag-offset (extract-bits flags-word #x1FFF 0))
 
-;; IPv4 flag names
-(def ipv4-flag-names
-  (alist
-    (#x4 "DF")  ;; Don't Fragment
-    (#x2 "MF"))) ;; More Fragments
+           ;; Byte 8: TTL
+           (ttl-res (read-u8 buffer 8))
+           (ttl (unwrap ttl-res))
 
-(def (format-ipv4-flags flags)
-  "Format IPv4 flags
-   Example: 0x4 -> \"DF\""
-  (let ([df? (bitwise-and flags 0x4)]
-        [mf? (bitwise-and flags 0x2)])
-    (str
-      (if (> df? 0) "DF" "")
-      (if (and (> df? 0) (> mf? 0)) "|" "")
-      (if (> mf? 0) "MF" ""))))
+           ;; Byte 9: Protocol
+           (proto-res (read-u8 buffer 9))
+           (proto (unwrap proto-res))
 
-;; IP protocol numbers
-(def ip-protocols
-  (alist
-    (1 "ICMP")
-    (6 "TCP")
-    (17 "UDP")
-    (41 "IPv6")
-    (47 "GRE")
-    (50 "ESP")
-    (51 "AH")
-    (58 "ICMPv6")))
+           ;; Bytes 10-11: Checksum
+           (checksum-res (read-u16be buffer 10))
+           (checksum (unwrap checksum-res))
+
+           ;; Bytes 12-15: Source IP
+           (src-ip-res (read-u32be buffer 12))
+           (src-ip (unwrap src-ip-res))
+
+           ;; Bytes 16-19: Destination IP
+           (dst-ip-res (read-u32be buffer 16))
+           (dst-ip (unwrap dst-ip-res))
+
+           ;; Header length in bytes
+           (header-len (* ihl 4))
+
+           ;; Options (if IHL > 5)
+           (options (if (> ihl 5)
+                        (unwrap (slice buffer 20 (- header-len 20)))
+                        #f))
+
+           ;; Payload
+           (payload (unwrap (slice buffer header-len
+                                   (max 0 (- total-length header-len))))))
+
+      ;; Return structured packet
+      (ok `((version . ,version)
+            (ihl . ,ihl)
+            (dscp . ,dscp)
+            (ecn . ,ecn)
+            (total-length . ,total-length)
+            (identification . ((raw . ,id)
+                              (formatted . ,(fmt-hex id))))
+            (df-flag . (= df-flag 1))
+            (mf-flag . (= mf-flag 1))
+            (fragment-offset . ,frag-offset)
+            (ttl . ,ttl)
+            (protocol . ((raw . ,proto)
+                        (formatted . ,(format-ip-protocol proto))
+                        (next-protocol . ,(ip-protocol->protocol proto))))
+            (checksum . ((raw . ,checksum)
+                        (formatted . ,(fmt-hex checksum))))
+            (src-ip . ((raw . ,src-ip)
+                      (formatted . ,(fmt-ipv4 src-ip))))
+            (dst-ip . ((raw . ,dst-ip)
+                      (formatted . ,(fmt-ipv4 dst-ip))))
+            (options . ,options)
+            (payload . ,payload))))
+
+    ;; Catch errors with clear messages
+    (catch (e)
+      (err (str "IPv4 parse error: " e)))))
+
+;; ── IP Protocol Number Formatter ───────────────────────────────────────────
 
 (def (format-ip-protocol num)
-  "Format IP protocol number with name
-   Example: 6 -> \"TCP (6)\""
-  (let ([name (assoc-in ip-protocols num)])
-    (if name
-        (str (cdr name) " (" num ")")
-        (str num))))
+  "Format IP protocol number with name"
+  (cond
+    ((= num 0) "HOPOPT")
+    ((= num 1) "ICMP")
+    ((= num 2) "IGMP")
+    ((= num 6) "TCP")
+    ((= num 17) "UDP")
+    ((= num 41) "IPv6")
+    ((= num 47) "GRE")
+    ((= num 50) "ESP")
+    ((= num 51) "AH")
+    ((= num 58) "ICMPv6")
+    ((= num 112) "VRRP")
+    (#t (str "proto-" num))))
 
-;; Protocol registration would happen here
-;; (register-dissector-handler 'ipv4 'ethertype #x0800)
-;; (register-dissector-by-protocol 6 'tcp)
-;; (register-dissector-by-protocol 17 'udp)
+;; ── Exported API ───────────────────────────────────────────────────────────
 
-;; Exported API
-;; ipv4-protocol: the protocol definition
-;; format-ipv4-flags, format-ip-protocol: formatters
-;; ipv4-flag-names, ip-protocols: value mappings
+;; dissect-ipv4: main entry point
+;; format-ip-protocol: formatter for display
