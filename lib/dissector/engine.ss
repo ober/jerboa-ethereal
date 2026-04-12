@@ -1,21 +1,31 @@
 ;; jerboa-ethereal/lib/dissector/engine.ss
 ;; Core dissection pipeline: buffer parsing, field extraction, tree building
-;;
-;; This is the heart of packet dissection. Given a buffer and protocol definition,
-;; extract all fields and build a tree.
 
 (import (jerboa prelude))
 
-;; TODO: Phase 1 implementation
-;; - Define packet-t record type
-;; - Define field-value record type
-;; - Implement safe buffer abstraction
-;; - Implement dissection pipeline
+;; Data structures for packet dissection
 
-(define-syntax TODO-dissector-engine
-  (syntax-rules ()
-    [(_ msg)
-     (error 'dissector-engine "Not yet implemented: ~a" msg)]))
+(defstruct buffer (bytes pos end-offset))
 
-;; Placeholder exports
-(export)
+(defstruct field-value (name type raw-value formatted description))
+
+(defstruct dissected-packet (protocol-name fields raw-bytes payload-start payload-bytes next-protocol))
+
+;; Protocol discovery helper
+
+(def (raw-value-to-protocol value)
+  "Map protocol field value to protocol name"
+  (cond
+    [(= value #x0800) 'ipv4]
+    [(= value #x86DD) 'ipv6]
+    [(= value #x0806) 'arp]
+    [(= value 6) 'tcp]
+    [(= value 17) 'udp]
+    [(= value 1) 'icmp]
+    [#t #f]))
+
+;; Placeholder dissection engine (Phase 3 implementation)
+
+(def (dissect-protocol protocol buf offset)
+  "Parse protocol from buffer [Phase 3 stub]"
+  (error 'dissect-protocol "Not yet implemented"))
