@@ -1,6 +1,6 @@
 #!/usr/bin/env scheme
 ;; jerboa-ethereal - PCAP analyzer tool
-;; Phase 2: Full dissection and searching
+;; Phase 6: Extended protocols, flow analysis, and statistics
 
 (import (jerboa prelude))
 
@@ -58,18 +58,20 @@
   (displayln "Usage: scheme ethereal.ss <pcap-file> <command>")
   (displayln "")
   (displayln "Commands:")
-  (displayln "  stats    - Show statistics")
-  (displayln "  list N   - List first N packets")
+  (displayln "  stats       - Show basic statistics")
+  (displayln "  list N      - List first N packets with protocol info")
+  (displayln "  protocols   - Count packets by protocol layer")
   (displayln "")
   (displayln "Example:")
   (displayln "  scheme ethereal.ss capture.pcap stats")
   (displayln "")
-  (displayln "Phase 2 Status: Core dissection pipeline operational")
+  (displayln "Phase 6 Status: Extended protocols, flow analysis, statistics")
   (displayln "")
   (displayln "Supported protocols:")
-  (displayln "  - Ethernet (Layer 2)")
-  (displayln "  - IPv4 (Layer 3)")
-  (displayln "  - TCP/UDP (Layer 4)")
+  (displayln "  Layer 2: Ethernet, ARP")
+  (displayln "  Layer 3: IPv4, IPv6, ICMP, ICMPv6")
+  (displayln "  Layer 4: TCP, UDP")
+  (displayln "  Application: DNS, HTTP, HTTPS, SSH, DHCP, NTP")
   (displayln "")
   (displayln ""))
 
@@ -100,6 +102,31 @@
                 (if (> (length packets) 0)
                     (displayln (str "Avg packet: " (quotient total-size (length packets)))))
                 (displayln "")))
+
+             ((protocols)
+              (displayln "Protocol Distribution")
+              (displayln "════════════════════════════════════════════════════════════")
+              (let ((proto-count (make-hash-table)))
+                ;; Count protocols from EtherType
+                (for ((pkt packets))
+                  (let ((data (cdr pkt)))
+                    (if (>= (bytevector-length data) 14)
+                        (let ((etype-result (read-u16be data 12)))
+                          (if (ok? etype-result)
+                              (let ((etype (unwrap etype-result)))
+                                (let ((proto (case etype
+                                              ((#x0800) "IPv4")
+                                              ((#x0806) "ARP")
+                                              ((#x86DD) "IPv6")
+                                              (else (str "0x" (format "~4,'0x" etype))))))
+                                  (hash-put! proto-count proto
+                                            (+ 1 (hash-get proto-count proto 0))))))))))
+
+                ;; Display results sorted by count
+                (let ((sorted (sort (hash->list proto-count)
+                                   (lambda (a b) (> (cdr a) (cdr b))))))
+                  (for ((entry sorted))
+                    (displayln (str (car entry) ": " (cdr entry)))))))
 
              ((list)
               (let ((count (if (>= (length args) 3)

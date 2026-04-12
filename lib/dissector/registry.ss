@@ -60,6 +60,8 @@
     ((25 587) 'smtp)
     ((110) 'pop3)
     ((143) 'imap)
+    ((123) 'ntp)
+    ((67 68) 'dhcp)
     (else #f)))
 
 ;; ── Helper: Extract Next Protocol from Dissected Layer ──────────────────
