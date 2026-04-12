@@ -10,179 +10,175 @@
 
 (import (jerboa prelude))
 
-;; ── Protocol Registry ──────────────────────────────────────────────────────
-;; Maps protocol names to their dissection functions
-
-(def protocol-registry (make-hash-table))
-
-(def (register-protocol! name dissector-fn)
-  "Register a protocol dissector function"
-  (hash-put! protocol-registry name dissector-fn))
-
-(def (get-dissector proto-name)
-  "Look up dissector for protocol, returns #f if not registered"
-  (hash-get protocol-registry proto-name))
-
-;; ── Dissection Result Type ─────────────────────────────────────────────────
-
-(defstruct dissected-layer
-  (protocol-name
-   fields
-   payload-bytes))
-
-;; ── Core Pipeline ─────────────────────────────────────────────────────────
+;; ── Core Pipeline ──────────────────────────────────────────────────────
 
 (def (dissect-packet buffer (start-proto 'ethernet))
   "Dissect packet starting with given protocol
    Returns (ok layers) or (err message)
 
-   layers is nested: ((ethernet (fields ...) (ipv4 (fields ...) ...)))
-
-   Automatically chains protocols based on:
-   - Ethernet EtherType field
-   - IPv4 protocol field
-   - TCP/UDP port-based detection"
+   layers is a list of dissected results from each protocol layer"
 
   (dissect-protocol-chain buffer start-proto '()))
 
-(def (dissect-protocol-chain buffer proto-name acc)
-  "Recursively dissect protocol and its payloads
-   acc: accumulated layers (for nested structure)"
+(def (dissect-protocol-chain buffer proto-name layers)
+  "Recursively dissect protocol and chain to next layer
+
+   Params:
+   - buffer: bytevector of packet data
+   - proto-name: symbol like 'ethernet, 'ipv4, 'tcp
+   - layers: accumulated layers (for final result list)
+
+   Returns (ok layers) or (err message)"
 
   (let ((dissector (get-dissector proto-name)))
     (cond
-      ;; Protocol not registered
+      ;; Protocol not registered - return what we have so far
       ((not dissector)
-       (err (str "Unknown protocol: " proto-name)))
+       (if (null? layers)
+           (err (str "Unknown protocol: " proto-name))
+           (ok (reverse layers))))
 
       ;; Dissect this layer
-      (#t
+      (else
        (try
-         ;; Parse this protocol layer
-         (let ((layer-result (dissector buffer)))
+         (let ((result (dissector buffer)))
            (cond
              ;; Dissection failed
-             ((err? layer-result)
-              (err (unwrap-err layer-result)))
+             ((err? result)
+              (if (null? layers)
+                  result
+                  ;; We have partial dissection
+                  (ok (reverse layers))))
 
              ;; Dissection succeeded
-             (#t
-              (let* ((layer (unwrap-ok layer-result))
-                     (payload (dissected-layer-payload-bytes layer))
-                     (next-proto (find-next-protocol layer)))
+             (else
+              (let* ((fields (unwrap result))
+                     (payload (assoc-get fields 'payload #f))
+                     (next-proto (find-next-protocol proto-name fields)))
 
-                ;; Continue chaining if there's more to parse
-                (if (and next-proto payload (> (bytevector-length payload) 0))
-                    ;; Recursively dissect payload
-                    (let ((rest (dissect-protocol-chain payload next-proto acc)))
-                      (cond
-                        ((err? rest) rest)
-                        (#t (ok (cons layer (unwrap-ok rest))))))
-
+                ;; Continue chaining if there's more payload
+                (if (and next-proto payload
+                        (> (bytevector-length payload) 0))
+                    ;; Recursively dissect payload with next protocol
+                    (dissect-protocol-chain payload next-proto
+                                           (cons (cons proto-name fields) layers))
                     ;; End of chain
-                    (ok (cons layer acc)))))))
+                    (ok (reverse (cons (cons proto-name fields) layers))))))))
 
          ;; Catch unexpected errors
          (catch (e)
-           (err (str "Dissection error in " proto-name ": " e))))))))
+           (if (null? layers)
+               (err (str "Dissection error in " proto-name ": " e))
+               (ok (reverse layers)))))))))
 
-;; ── Find Next Protocol ─────────────────────────────────────────────────────
+;; ── Find Next Protocol ──────────────────────────────────────────────────
 
-(def (find-next-protocol layer)
-  "Look for protocol discovery field in dissected layer
-   Returns protocol name or #f"
+(def (find-next-protocol proto-name fields)
+  "Determine next protocol in chain based on current protocol and fields
+   Returns protocol name (symbol) or #f"
 
-  (let ((fields (dissected-layer-fields layer)))
-    ;; Search for field with 'next-protocol marker
-    (let loop ((fields fields))
-      (cond
-        ((null? fields) #f)
-        (#t
-         (let ((field (car fields)))
-           (if (and (pair? field)
-                    (pair? (cdr field))
-                    (pair? (cadr field)))
-               ;; Check if this field has next-protocol info
-               (let ((next-val (assoc-in (cadr field) 'next-protocol)))
-                 (if next-val
-                     (cdr next-val)
-                     (loop (cdr fields))))
-               (loop (cdr fields)))))))))
+  (case proto-name
+    ;; Ethernet: check EtherType
+    ((ethernet)
+     (let ((etype-field (assoc-get fields 'etype #f)))
+       (if etype-field
+           (let ((etype (assoc-get etype-field 'raw)))
+             (ethertype->protocol etype))
+           #f)))
 
-;; ── Display Dissected Packet ──────────────────────────────────────────────
+    ;; IPv4: check protocol number
+    ((ipv4)
+     (let ((proto-field (assoc-get fields 'protocol #f)))
+       (if proto-field
+           (let ((proto-num (assoc-get proto-field 'raw)))
+             (ip-protocol->protocol proto-num))
+           #f)))
 
-(def (display-packet layers (indent 0))
-  "Pretty-print dissected packet tree with indentation"
+    ;; TCP/UDP: check destination port for DNS
+    ((tcp udp)
+     (let ((dst-port-field (assoc-get fields 'dst-port #f)))
+       (if dst-port-field
+           (let ((port (assoc-get dst-port-field 'raw)))
+             (port->protocol port))
+           #f)))
 
-  (let ((spaces (make-string indent #\space)))
+    ;; Other protocols: no chaining
+    (else #f)))
+
+;; ── Dissection Result Display ────────────────────────────────────────────
+
+(def (display-dissected-packet layers)
+  "Pretty-print dissected packet tree
+
+   layers is ((proto-name . fields) (proto-name . fields) ...)"
+
+  (string-join
+    (map (lambda (layer)
+           (let ((proto-name (car layer))
+                 (fields (cdr layer)))
+             (str (format-protocol-name proto-name) ":"
+                  "\n"
+                  (display-fields fields 2))))
+         layers)
+    "\n\n"))
+
+(def (format-protocol-name name)
+  "Format protocol name for display"
+  (case name
+    ((ethernet) "Ethernet")
+    ((ipv4) "IPv4")
+    ((ipv6) "IPv6")
+    ((tcp) "TCP")
+    ((udp) "UDP")
+    ((icmp) "ICMP")
+    ((icmpv6) "ICMPv6")
+    ((igmp) "IGMP")
+    ((arp) "ARP")
+    ((dns) "DNS")
+    (else (str name))))
+
+(def (display-fields fields indent)
+  "Format fields for display with indentation
+
+   Fields can be:
+   - (name . value) - simple field
+   - (name . ((raw . val) (formatted . str))) - complex field with metadata"
+
+  (let ((space (make-string indent #\space)))
     (string-join
-      (map (lambda (layer)
-             (let ((proto (dissected-layer-protocol-name layer))
-                   (fields (dissected-layer-fields layer)))
-               (string-join
-                 (cons (str spaces proto ":")
-                       (map (lambda (f)
-                              (str spaces "  " (display-field f)))
-                            fields))
-                 "\n")))
-           layers)
+      (map (lambda (field)
+             (let ((name (car field))
+                   (value (cdr field)))
+               (cond
+                 ;; Complex field with metadata
+                 ((pair? value)
+                  (let ((formatted (assoc-get value 'formatted #f)))
+                    (if formatted
+                        (str space (format-field-name name) " = " formatted)
+                        (let ((raw (assoc-get value 'raw #f)))
+                          (if raw
+                              (str space (format-field-name name) " = " (truncate-value raw 60))
+                              (str space (format-field-name name) " = ?"))))))
+                 ;; Simple field
+                 (else
+                  (str space (format-field-name name) " = " (truncate-value value 60))))))
+           fields)
       "\n")))
 
-(def (display-field field)
-  "Format a single field for display"
-  (let ((name (car field))
-        (val (cdr field)))
-    (cond
-      ;; Simple value
-      ((not (pair? val))
-       (str name " = " val))
+(def (format-field-name name)
+  "Format field name for display"
+  (string-replace (string-replace (str name) "-" " ") "_" " "))
 
-      ;; Value with metadata
-      ((pair? (car val))
-       ;; Complex field with raw/formatted/next-protocol
-       (let ((formatted (assoc-in val 'formatted)))
-         (if formatted
-             (str name " = " (cdr formatted))
-             (str name " = " (assoc-in val 'raw)))))
+(def (truncate-value val max-len)
+  "Truncate value display to max length"
+  (let ((str-val (str val)))
+    (if (> (string-length str-val) max-len)
+        (str (string-take str-val (- max-len 3)) "...")
+        str-val)))
 
-      ;; Simple pair (raw . value)
-      (#t
-       (str name " = " (cdr val))))))
+;; ── Exported API ───────────────────────────────────────────────────────────
 
-;; ── Error Handling ─────────────────────────────────────────────────────────
-
-(def (dissection-success? result)
-  "Check if dissection succeeded"
-  (ok? result))
-
-(def (dissection-error result)
-  "Extract error message if dissection failed"
-  (if (err? result)
-      (unwrap-err result)
-      #f))
-
-(def (partial-dissection? layers)
-  "Check if we got partial dissection (error at some layer)"
-  (not (null? layers)))
-
-;; ── Packet Statistics ──────────────────────────────────────────────────────
-
-(def (packet-size-stats layers total-bytes)
-  "Return statistics about packet structure"
-  (let loop ((layers layers)
-             (acc 0)
-             (count 0))
-    (if (null? layers)
-        `((total-bytes . ,total-bytes)
-          (layers . ,count)
-          (parsed-bytes . ,acc)
-          (unparsed-bytes . ,(max 0 (- total-bytes acc))))
-        (let ((layer (car layers)))
-          (loop (cdr layers)
-                (+ acc (packet-layer-size layer))
-                (+ count 1))))))
-
-(def (packet-layer-size layer)
-  "Estimate size of a dissected layer (rough)"
-  ;; This is approximate - would need to track byte positions for exact size
-  20)  ;; TODO: track actual positions during dissection
+;; dissect-packet: main entry point, start dissecting from a protocol
+;; dissect-protocol-chain: recursive chain dissection
+;; find-next-protocol: determine next protocol based on current layer fields
+;; display-dissected-packet: pretty-print dissected packet layers
