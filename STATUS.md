@@ -65,18 +65,47 @@ Raw Packet Bytes (bytevector)
 [Display] - formatted output for analysis
 ```
 
-## Next Phase: Phase 4 (Weeks 7-8)
+### Phase 4 ✓ COMPLETE
+**Code-Generated Safe Dissectors** (Weeks 7-8)
 
-**Integration & Tool Building**
+Major architectural redesign:
+- Shift from **runtime interpretation** → **code generation**
+- Generated tight, inline dissectors with zero overhead
+- Inline safety checks in every function
+- Result-type error handling for corruption handling
+
+Deliverables:
+- `lib/dissector/protocol.ss`: Safe read primitives and helpers
+  - read-u8, read-u16be/le, read-u32be/le
+  - slice: safe bytevector extraction
+  - extract-bits: bitfield operations
+  - fmt-ipv4, fmt-mac, fmt-hex, fmt-port formatters
+  - Protocol discovery helpers
+- `dissectors/ethernet.ss`: Clean 50-line Ethernet dissector
+- `dissectors/ipv4.ss`: Full IPv4 RFC 791 dissector with options
+- `dissectors/udp.ss`: Simple 35-line UDP dissector
+- `docs/PHASE4_REDESIGN.md`: Architecture documentation
+
+Key Improvements:
+- ✓ No runtime evaluation of conditions or sizes
+- ✓ Every bounds check visible and inline
+- ✓ Graceful error handling for corrupt packets
+- ✓ Minimal boilerplate (50-80 lines per protocol)
+- ✓ Safe for concurrent parsing, no shared state
+- ✓ Code is readable and verifiable
+
+## Next Phase: Phase 5 (Weeks 9-10)
+
+**Tool Building & Integration**
 
 Priority tasks:
-1. **DSL Integration**: Connect parser.ss output to engine.ss dissection
-2. **Conditional Evaluation**: Parse and evaluate conditional field predicates `(> ihl 5)`
-3. **Size Expression Evaluation**: Handle dynamic size expressions `(- length 8)`
-4. **Protocol Registry**: Build registry of protocol-name → protocol-definition
-5. **End-to-End Demo**: Parse real PCAP packets, dissect complete chains
-6. **Packet Analyzer Tool**: Command-line tool for packet analysis
-7. **Test Suite**: Unit tests for dissection correctness
+1. **Module System**: Compile dissectors to .so libraries
+2. **Dissection Pipeline**: Chain protocols (Eth → IPv4 → UDP)
+3. **Packet Demo**: Parse and display real packet data
+4. **TCP Dissector**: Handle complex option parsing
+5. **Error Recovery**: Partial dissection on malformed data
+6. **Formatter Integration**: Combine output from chained protocols
+7. **Test Suite**: Unit tests for all dissectors
 
 ## Metrics
 
