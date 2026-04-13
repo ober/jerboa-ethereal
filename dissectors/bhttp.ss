@@ -1,0 +1,149 @@
+;; packet-bhttp.c
+;; Routines for dissecting the binary format representation of HTTP messages.
+;; Copyright 2023, Lucas Pardue <lucaspardue.24.7@gmail.com>
+;;
+;; Wireshark - Network traffic analyzer
+;; By Gerald Combs <gerald@wireshark.org>
+;; Copyright 1998 Gerald Combs
+;;
+;; SPDX-License-Identifier: GPL-2.0-or-later
+;;
+
+;; jerboa-ethereal/dissectors/bhttp.ss
+;; Auto-generated from wireshark/epan/dissectors/packet-bhttp.c
+;; RFC 9292
+
+(import (jerboa prelude))
+
+;; ── Protocol Helpers ─────────────────────────────────────────────────
+(def (read-u8 buf offset)
+  (if (>= offset (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u8-ref buf offset))))
+
+(def (read-u16be buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness big)))))
+
+(def (read-u24be buf offset)
+  (if (> (+ offset 3) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (+ (* (bytevector-u8-ref buf offset) 65536)
+             (* (bytevector-u8-ref buf (+ offset 1)) 256)
+             (bytevector-u8-ref buf (+ offset 2))))))
+
+(def (read-u32be buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness big)))))
+
+(def (read-u16le buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness little)))))
+
+(def (read-u32le buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness little)))))
+
+(def (read-u64be buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness big)))))
+
+(def (read-u64le buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness little)))))
+
+(def (slice buf offset len)
+  (if (> (+ offset len) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (let ((result (make-bytevector len)))
+            (bytevector-copy! buf offset result 0 len)
+            result))))
+
+(def (extract-bits val mask shift)
+  (bitwise-arithmetic-shift-right (bitwise-and val mask) shift))
+
+(def (fmt-ipv4 addr)
+  (let ((b0 (bitwise-arithmetic-shift-right addr 24))
+        (b1 (bitwise-and (bitwise-arithmetic-shift-right addr 16) 255))
+        (b2 (bitwise-and (bitwise-arithmetic-shift-right addr 8) 255))
+        (b3 (bitwise-and addr 255)))
+    (str b0 "." b1 "." b2 "." b3)))
+
+(def (fmt-mac bytes)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bytes))
+    ":"))
+
+(def (fmt-hex val)
+  (str "0x" (number->string val 16)))
+
+(def (fmt-oct val)
+  (str "0" (number->string val 8)))
+
+(def (fmt-port port)
+  (number->string port))
+
+(def (fmt-bytes bv)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bv))
+    " "))
+
+(def (fmt-ipv6-address bytes)
+  (let loop ((i 0) (parts '()))
+    (if (>= i 16)
+        (string-join (reverse parts) ":")
+        (loop (+ i 2)
+              (cons (let ((w (+ (* (bytevector-u8-ref bytes i) 256)
+                                (bytevector-u8-ref bytes (+ i 1)))))
+                      (number->string w 16))
+                    parts)))))
+
+;; ── Dissector ──────────────────────────────────────────────────────
+(def (dissect-bhttp buffer)
+  "Binary representation of HTTP Messages"
+  (try
+    (let* (
+           (request-method-len (unwrap (read-u64be buffer 0)))
+           (request-scheme-len (unwrap (read-u64be buffer 0)))
+           (request-authority-len (unwrap (read-u64be buffer 0)))
+           (request-path-len (unwrap (read-u64be buffer 0)))
+           (known-length-field-section-length (unwrap (read-u64be buffer 0)))
+           (name-len (unwrap (read-u64be buffer 0)))
+           (value-len (unwrap (read-u64be buffer 0)))
+           (indeterminate-content-terminator (unwrap (read-u64be buffer 0)))
+           (indeterminate-length-content-chunk-length (unwrap (read-u64be buffer 0)))
+           (known-length-content-length (unwrap (read-u64be buffer 0)))
+           (padding-length (unwrap (read-u32be buffer 0)))
+           (info-response-status (unwrap (read-u64be buffer 0)))
+           (final-response-status (unwrap (read-u64be buffer 0)))
+           )
+
+      (ok (list
+        (cons 'request-method-len (list (cons 'raw request-method-len) (cons 'formatted (number->string request-method-len))))
+        (cons 'request-scheme-len (list (cons 'raw request-scheme-len) (cons 'formatted (number->string request-scheme-len))))
+        (cons 'request-authority-len (list (cons 'raw request-authority-len) (cons 'formatted (number->string request-authority-len))))
+        (cons 'request-path-len (list (cons 'raw request-path-len) (cons 'formatted (number->string request-path-len))))
+        (cons 'known-length-field-section-length (list (cons 'raw known-length-field-section-length) (cons 'formatted (number->string known-length-field-section-length))))
+        (cons 'name-len (list (cons 'raw name-len) (cons 'formatted (number->string name-len))))
+        (cons 'value-len (list (cons 'raw value-len) (cons 'formatted (number->string value-len))))
+        (cons 'indeterminate-content-terminator (list (cons 'raw indeterminate-content-terminator) (cons 'formatted (number->string indeterminate-content-terminator))))
+        (cons 'indeterminate-length-content-chunk-length (list (cons 'raw indeterminate-length-content-chunk-length) (cons 'formatted (number->string indeterminate-length-content-chunk-length))))
+        (cons 'known-length-content-length (list (cons 'raw known-length-content-length) (cons 'formatted (number->string known-length-content-length))))
+        (cons 'padding-length (list (cons 'raw padding-length) (cons 'formatted (number->string padding-length))))
+        (cons 'info-response-status (list (cons 'raw info-response-status) (cons 'formatted (number->string info-response-status))))
+        (cons 'final-response-status (list (cons 'raw final-response-status) (cons 'formatted (number->string final-response-status))))
+        )))
+
+    (catch (e)
+      (err (str "BHTTP parse error: " e)))))
+
+;; dissect-bhttp: parse BHTTP from bytevector
+;; Returns (ok fields-alist) or (err message)

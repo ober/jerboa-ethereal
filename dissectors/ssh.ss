@@ -1,12 +1,29 @@
-;; jerboa-ethereal/dissectors/ssh.ss
-;; RFC 4251: The Secure Shell (SSH) Protocol Architecture
+;; packet-ssh.c
+;; Routines for ssh packet dissection
 ;;
-;; Basic SSH protocol parsing - unencrypted protocol header analysis
-;; Full message decryption is crypto-intensive and handled separately
+;; Huagang XIE <huagang@intruvert.com>
+;; Kees Cook <kees@outflux.net>
+;;
+;; Wireshark - Network traffic analyzer
+;; By Gerald Combs <gerald@wireshark.org>
+;; Copyright 1998 Gerald Combs
+;;
+;; Copied from packet-mysql.c
+;;
+;; SPDX-License-Identifier: GPL-2.0-or-later
+;;
+;;
+;; Note:  support SSH v1 and v2  now.
+;;
+;;
+
+;; jerboa-ethereal/dissectors/ssh.ss
+;; Auto-generated from wireshark/epan/dissectors/packet-ssh.c
+;; RFC 4250
 
 (import (jerboa prelude))
-;; ── Protocol Helpers (from lib/dissector/protocol.ss) ────────────────────
 
+;; ── Protocol Helpers ─────────────────────────────────────────────────
 (def (read-u8 buf offset)
   (if (>= offset (bytevector-length buf))
       (err "Buffer overrun")
@@ -16,6 +33,13 @@
   (if (> (+ offset 2) (bytevector-length buf))
       (err "Buffer overrun")
       (ok (bytevector-u16-ref buf offset (endianness big)))))
+
+(def (read-u24be buf offset)
+  (if (> (+ offset 3) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (+ (* (bytevector-u8-ref buf offset) 65536)
+             (* (bytevector-u8-ref buf (+ offset 1)) 256)
+             (bytevector-u8-ref buf (+ offset 2))))))
 
 (def (read-u32be buf offset)
   (if (> (+ offset 4) (bytevector-length buf))
@@ -32,6 +56,16 @@
       (err "Buffer overrun")
       (ok (bytevector-u32-ref buf offset (endianness little)))))
 
+(def (read-u64be buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness big)))))
+
+(def (read-u64le buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness little)))))
+
 (def (slice buf offset len)
   (if (> (+ offset len) (bytevector-length buf))
       (err "Buffer overrun")
@@ -41,9 +75,6 @@
 
 (def (extract-bits val mask shift)
   (bitwise-arithmetic-shift-right (bitwise-and val mask) shift))
-
-(def (validate pred msg)
-  (if pred (ok #t) (err msg)))
 
 (def (fmt-ipv4 addr)
   (let ((b0 (bitwise-arithmetic-shift-right addr 24))
@@ -61,147 +92,104 @@
 (def (fmt-hex val)
   (str "0x" (number->string val 16)))
 
+(def (fmt-oct val)
+  (str "0" (number->string val 8)))
+
 (def (fmt-port port)
   (number->string port))
 
-(def (ip-protocol->protocol num)
-  (case num
-    ((1) 'icmp) ((6) 'tcp) ((17) 'udp)
-    ((41) 'ipv6) ((58) 'icmpv6) (else #f)))
+(def (fmt-bytes bv)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bv))
+    " "))
 
+(def (fmt-ipv6-address bytes)
+  (let loop ((i 0) (parts '()))
+    (if (>= i 16)
+        (string-join (reverse parts) ":")
+        (loop (+ i 2)
+              (cons (let ((w (+ (* (bytevector-u8-ref bytes i) 256)
+                                (bytevector-u8-ref bytes (+ i 1)))))
+                      (number->string w 16))
+                    parts)))))
 
-
-;; ── SSH Protocol Message Type Formatter ────────────────────────────────────
-
-(def (format-ssh-message-type msg-type)
-  "Format SSH message type code"
-  (case msg-type
-    ((1) "SSH_MSG_DISCONNECT")
-    ((2) "SSH_MSG_IGNORE")
-    ((3) "SSH_MSG_UNIMPLEMENTED")
-    ((4) "SSH_MSG_DEBUG")
-    ((5) "SSH_MSG_SERVICE_REQUEST")
-    ((6) "SSH_MSG_SERVICE_ACCEPT")
-    ((20) "SSH_MSG_KEXINIT")
-    ((21) "SSH_MSG_NEWKEYS")
-    ((30) "SSH_MSG_KEXDH_INIT")
-    ((31) "SSH_MSG_KEXDH_REPLY")
-    ((50) "SSH_MSG_USERAUTH_REQUEST")
-    ((51) "SSH_MSG_USERAUTH_FAILURE")
-    ((52) "SSH_MSG_USERAUTH_SUCCESS")
-    ((53) "SSH_MSG_USERAUTH_BANNER")
-    ((60) "SSH_MSG_USERAUTH_PASSWD_CHANGEREQ")
-    ((80) "SSH_MSG_GLOBAL_REQUEST")
-    ((81) "SSH_MSG_REQUEST_SUCCESS")
-    ((82) "SSH_MSG_REQUEST_FAILURE")
-    ((90) "SSH_MSG_CHANNEL_OPEN")
-    ((91) "SSH_MSG_CHANNEL_OPEN_CONFIRMATION")
-    ((92) "SSH_MSG_CHANNEL_OPEN_FAILURE")
-    ((93) "SSH_MSG_CHANNEL_WINDOW_ADJUST")
-    ((94) "SSH_MSG_CHANNEL_DATA")
-    ((95) "SSH_MSG_CHANNEL_EXTENDED_DATA")
-    ((96) "SSH_MSG_CHANNEL_EOF")
-    ((97) "SSH_MSG_CHANNEL_CLOSE")
-    ((98) "SSH_MSG_CHANNEL_REQUEST")
-    ((99) "SSH_MSG_CHANNEL_SUCCESS")
-    ((100) "SSH_MSG_CHANNEL_FAILURE")
-    (else (str "Type " msg-type))))
-
-(def (format-ssh-version version-string)
-  "Format SSH protocol version string
-   Format: SSH-protocolversion-softwareversion"
-  (if (string? version-string)
-      version-string
-      "Unknown"))
-
-;; ── Core SSH Dissector ────────────────────────────────────────────────────
-
+;; ── Dissector ──────────────────────────────────────────────────────
 (def (dissect-ssh buffer)
-  "Parse SSH protocol from bytevector
-   Returns (ok fields) or (err message)
-
-   SSH has two phases:
-   1. Unencrypted protocol exchange (version strings, algorithms)
-   2. Encrypted packet exchange
-
-   This dissector handles:
-   - SSH version identification string (first line)
-   - Packet header (for encrypted packets)
-   - Basic protocol structure
-
-   Structure:
-   - Identification string: 'SSH-<protocolversion>-<softwareversion>\\r\\n'
-   - Then encrypted packets with structure:
-     [0:4)   packet length
-     [4]     padding length
-     [5:)    payload"
-
+  "SSH Protocol"
   (try
-    ;; Minimum 11 bytes for SSH identification
-    (unwrap (validate (>= (bytevector-length buffer) 5)
-                         "SSH packet too short")))
+    (let* (
+           (direction (unwrap (read-u8 buffer 0)))
+           (pk-blob-name-length (unwrap (read-u32be buffer 0)))
+           (pty-term-mode-value (unwrap (read-u32be buffer 1)))
+           (pk-blob-name (unwrap (slice buffer 4 1)))
+           (blob-data (unwrap (slice buffer 4 1)))
+           (mpint-length (unwrap (read-u32be buffer 5)))
+           (seq-num (unwrap (read-u32be buffer 6)))
+           (hostkey-type (unwrap (slice buffer 25 1)))
+           (hostkey-data (unwrap (slice buffer 25 1)))
+           (hostsig-type (unwrap (slice buffer 37 1)))
+           (hostsig-data-length (unwrap (read-u32be buffer 37)))
+           (hostsig-data (unwrap (slice buffer 41 1)))
+           (padding-length (unwrap (read-u8 buffer 45)))
+           (payload (unwrap (slice buffer 47 1)))
+           (padding-string (unwrap (slice buffer 47 1)))
+           (dh-gex-min (unwrap (read-u32be buffer 53)))
+           (dh-gex-nbits (unwrap (read-u32be buffer 57)))
+           (dh-gex-max (unwrap (read-u32be buffer 61)))
+           (hybrid-blob-client-len (unwrap (read-u32be buffer 67)))
+           (hybrid-blob-server-len (unwrap (read-u32be buffer 71)))
+           (packet-length (unwrap (read-u32be buffer 75)))
+           (packet-length-encrypted (unwrap (slice buffer 75 4)))
+           (encrypted-packet (unwrap (slice buffer 75 1)))
+           (protocol (unwrap (slice buffer 75 1)))
+           (cookie (unwrap (slice buffer 75 16)))
+           (first-kex-packet-follows (unwrap (read-u8 buffer 91)))
+           (kex-reserved (unwrap (slice buffer 92 4)))
+           (kex-hassh-algo (unwrap (slice buffer 96 1)))
+           (kex-hassh (unwrap (slice buffer 96 1)))
+           (kex-hasshserver-algo (unwrap (slice buffer 96 1)))
+           (kex-hasshserver (unwrap (slice buffer 96 1)))
+           (segment-data (unwrap (slice buffer 102 1)))
+           )
 
-    ;; Check if this is an identification string or encrypted packet
-    (let ((first-bytes (bytevector->list (bytevector-copy buffer 0 (min 4 (bytevector-length buffer))))))
-      (cond
-        ;; Unencrypted identification string: starts with 'SSH-'
-        ((and (>= (bytevector-length buffer) 4)
-              (= (bytevector-u8-ref buffer 0) 83)  ; 'S'
-              (= (bytevector-u8-ref buffer 1) 83)  ; 'S'
-              (= (bytevector-u8-ref buffer 2) 72)  ; 'H'
-              (= (bytevector-u8-ref buffer 3) 45)) ; '-'
+      (ok (list
+        (cons 'direction (list (cons 'raw direction) (cons 'formatted (if (= direction 0) "False" "True"))))
+        (cons 'pk-blob-name-length (list (cons 'raw pk-blob-name-length) (cons 'formatted (number->string pk-blob-name-length))))
+        (cons 'pty-term-mode-value (list (cons 'raw pty-term-mode-value) (cons 'formatted (number->string pty-term-mode-value))))
+        (cons 'pk-blob-name (list (cons 'raw pk-blob-name) (cons 'formatted (utf8->string pk-blob-name))))
+        (cons 'blob-data (list (cons 'raw blob-data) (cons 'formatted (fmt-bytes blob-data))))
+        (cons 'mpint-length (list (cons 'raw mpint-length) (cons 'formatted (number->string mpint-length))))
+        (cons 'seq-num (list (cons 'raw seq-num) (cons 'formatted (number->string seq-num))))
+        (cons 'hostkey-type (list (cons 'raw hostkey-type) (cons 'formatted (utf8->string hostkey-type))))
+        (cons 'hostkey-data (list (cons 'raw hostkey-data) (cons 'formatted (fmt-bytes hostkey-data))))
+        (cons 'hostsig-type (list (cons 'raw hostsig-type) (cons 'formatted (utf8->string hostsig-type))))
+        (cons 'hostsig-data-length (list (cons 'raw hostsig-data-length) (cons 'formatted (number->string hostsig-data-length))))
+        (cons 'hostsig-data (list (cons 'raw hostsig-data) (cons 'formatted (fmt-bytes hostsig-data))))
+        (cons 'padding-length (list (cons 'raw padding-length) (cons 'formatted (number->string padding-length))))
+        (cons 'payload (list (cons 'raw payload) (cons 'formatted (fmt-bytes payload))))
+        (cons 'padding-string (list (cons 'raw padding-string) (cons 'formatted (fmt-bytes padding-string))))
+        (cons 'dh-gex-min (list (cons 'raw dh-gex-min) (cons 'formatted (number->string dh-gex-min))))
+        (cons 'dh-gex-nbits (list (cons 'raw dh-gex-nbits) (cons 'formatted (number->string dh-gex-nbits))))
+        (cons 'dh-gex-max (list (cons 'raw dh-gex-max) (cons 'formatted (number->string dh-gex-max))))
+        (cons 'hybrid-blob-client-len (list (cons 'raw hybrid-blob-client-len) (cons 'formatted (number->string hybrid-blob-client-len))))
+        (cons 'hybrid-blob-server-len (list (cons 'raw hybrid-blob-server-len) (cons 'formatted (number->string hybrid-blob-server-len))))
+        (cons 'packet-length (list (cons 'raw packet-length) (cons 'formatted (number->string packet-length))))
+        (cons 'packet-length-encrypted (list (cons 'raw packet-length-encrypted) (cons 'formatted (fmt-bytes packet-length-encrypted))))
+        (cons 'encrypted-packet (list (cons 'raw encrypted-packet) (cons 'formatted (fmt-bytes encrypted-packet))))
+        (cons 'protocol (list (cons 'raw protocol) (cons 'formatted (utf8->string protocol))))
+        (cons 'cookie (list (cons 'raw cookie) (cons 'formatted (fmt-bytes cookie))))
+        (cons 'first-kex-packet-follows (list (cons 'raw first-kex-packet-follows) (cons 'formatted (number->string first-kex-packet-follows))))
+        (cons 'kex-reserved (list (cons 'raw kex-reserved) (cons 'formatted (fmt-bytes kex-reserved))))
+        (cons 'kex-hassh-algo (list (cons 'raw kex-hassh-algo) (cons 'formatted (utf8->string kex-hassh-algo))))
+        (cons 'kex-hassh (list (cons 'raw kex-hassh) (cons 'formatted (utf8->string kex-hassh))))
+        (cons 'kex-hasshserver-algo (list (cons 'raw kex-hasshserver-algo) (cons 'formatted (utf8->string kex-hasshserver-algo))))
+        (cons 'kex-hasshserver (list (cons 'raw kex-hasshserver) (cons 'formatted (utf8->string kex-hasshserver))))
+        (cons 'segment-data (list (cons 'raw segment-data) (cons 'formatted (fmt-bytes segment-data))))
+        )))
 
-         ;; Extract version string (up to CRLF or buffer end)
-         (let ((version-end (let loop ((i 0))
-                             (cond
-                               ((>= i (bytevector-length buffer)) i)
-                               ((and (= (bytevector-u8-ref buffer i) 13)  ; CR
-                                     (< (+ i 1) (bytevector-length buffer))
-                                     (= (bytevector-u8-ref buffer (+ i 1)) 10))  ; LF
-                                i)
-                               (else (loop (+ i 1)))))))
-
-           (let ((version-bytes (unwrap (slice buffer 0 version-end)))
-                 (version-str (try
-                               (bytevector->string version-bytes (make-transcoder (utf-8-codec)))
-                               (catch (e) "Unable to decode version string"))))
-
-             (ok `((protocol . "SSH")
-                   (type . "Identification String")
-                   (version . ((raw . ,version-bytes)
-                              (formatted . ,version-str)))
-                   (size . ,(bytevector-length buffer)))))))
-
-        ;; Encrypted packet: parse header
-        ((>= (bytevector-length buffer) 5)
-
-         (let* ((pkt-len-res (read-u32be buffer 0))
-                (pkt-len (unwrap pkt-len-res))
-
-                (pad-len-res (read-u8 buffer 4))
-                (pad-len (unwrap pad-len-res)))
-
-           (ok `((protocol . "SSH")
-                 (type . "Encrypted Packet")
-                 (packet-length . ,pkt-len)
-                 (padding-length . ,pad-len)
-                 (payload-length . ,(max 0 (- pkt-len pad-len 1)))
-                 (encrypted . #t)
-                 (size . ,(bytevector-length buffer))))))
-
-        ;; Unknown format
-        (else
-         (err "Invalid SSH packet format"))))
-
-    ;; Error handling
     (catch (e)
       (err (str "SSH parse error: " e)))))
 
-;; ── Exported API ───────────────────────────────────────────────────────────
-
-;; dissect-ssh: main entry point
-;; format-ssh-message-type: message type formatter
-;; format-ssh-version: version string formatter
-;;
-;; Note: This is BASIC SSH parsing for identification and packet structure.
-;; Full SSH message parsing requires decryption and is protocol-dependent.
+;; dissect-ssh: parse SSH from bytevector
+;; Returns (ok fields-alist) or (err message)

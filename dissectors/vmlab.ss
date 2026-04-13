@@ -1,0 +1,135 @@
+;; packet-vmlab.c
+;; Routines for VMware Lab Manager Frame Dis-assembly
+;;
+;; Wireshark - Network traffic analyzer
+;; By Gerald Combs <gerald@wireshark.org>
+;; Copyright 1998 Gerald Combs
+;;
+;; SPDX-License-Identifier: GPL-2.0-or-later
+;;
+
+;; jerboa-ethereal/dissectors/vmlab.ss
+;; Auto-generated from wireshark/epan/dissectors/packet-vmlab.c
+
+(import (jerboa prelude))
+
+;; ── Protocol Helpers ─────────────────────────────────────────────────
+(def (read-u8 buf offset)
+  (if (>= offset (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u8-ref buf offset))))
+
+(def (read-u16be buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness big)))))
+
+(def (read-u24be buf offset)
+  (if (> (+ offset 3) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (+ (* (bytevector-u8-ref buf offset) 65536)
+             (* (bytevector-u8-ref buf (+ offset 1)) 256)
+             (bytevector-u8-ref buf (+ offset 2))))))
+
+(def (read-u32be buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness big)))))
+
+(def (read-u16le buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness little)))))
+
+(def (read-u32le buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness little)))))
+
+(def (read-u64be buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness big)))))
+
+(def (read-u64le buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness little)))))
+
+(def (slice buf offset len)
+  (if (> (+ offset len) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (let ((result (make-bytevector len)))
+            (bytevector-copy! buf offset result 0 len)
+            result))))
+
+(def (extract-bits val mask shift)
+  (bitwise-arithmetic-shift-right (bitwise-and val mask) shift))
+
+(def (fmt-ipv4 addr)
+  (let ((b0 (bitwise-arithmetic-shift-right addr 24))
+        (b1 (bitwise-and (bitwise-arithmetic-shift-right addr 16) 255))
+        (b2 (bitwise-and (bitwise-arithmetic-shift-right addr 8) 255))
+        (b3 (bitwise-and addr 255)))
+    (str b0 "." b1 "." b2 "." b3)))
+
+(def (fmt-mac bytes)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bytes))
+    ":"))
+
+(def (fmt-hex val)
+  (str "0x" (number->string val 16)))
+
+(def (fmt-oct val)
+  (str "0" (number->string val 8)))
+
+(def (fmt-port port)
+  (number->string port))
+
+(def (fmt-bytes bv)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bv))
+    " "))
+
+(def (fmt-ipv6-address bytes)
+  (let loop ((i 0) (parts '()))
+    (if (>= i 16)
+        (string-join (reverse parts) ":")
+        (loop (+ i 2)
+              (cons (let ((w (+ (* (bytevector-u8-ref bytes i) 256)
+                                (bytevector-u8-ref bytes (+ i 1)))))
+                      (number->string w 16))
+                    parts)))))
+
+;; ── Dissector ──────────────────────────────────────────────────────
+(def (dissect-vmlab buffer)
+  "VMware Lab Manager"
+  (try
+    (let* (
+           (flags-part1 (unwrap (read-u8 buffer 0)))
+           (flags-fragment (unwrap (read-u8 buffer 0)))
+           (flags-part2 (unwrap (read-u8 buffer 0)))
+           (portgroup (unwrap (read-u8 buffer 1)))
+           (eth-addr (unwrap (slice buffer 4 6)))
+           (eth-dst (unwrap (slice buffer 10 6)))
+           (eth-src (unwrap (slice buffer 16 6)))
+           )
+
+      (ok (list
+        (cons 'flags-part1 (list (cons 'raw flags-part1) (cons 'formatted (fmt-hex flags-part1))))
+        (cons 'flags-fragment (list (cons 'raw flags-fragment) (cons 'formatted (if (= flags-fragment 0) "False" "True"))))
+        (cons 'flags-part2 (list (cons 'raw flags-part2) (cons 'formatted (fmt-hex flags-part2))))
+        (cons 'portgroup (list (cons 'raw portgroup) (cons 'formatted (number->string portgroup))))
+        (cons 'eth-addr (list (cons 'raw eth-addr) (cons 'formatted (fmt-mac eth-addr))))
+        (cons 'eth-dst (list (cons 'raw eth-dst) (cons 'formatted (fmt-mac eth-dst))))
+        (cons 'eth-src (list (cons 'raw eth-src) (cons 'formatted (fmt-mac eth-src))))
+        )))
+
+    (catch (e)
+      (err (str "VMLAB parse error: " e)))))
+
+;; dissect-vmlab: parse VMLAB from bytevector
+;; Returns (ok fields-alist) or (err message)

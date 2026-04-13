@@ -1,13 +1,21 @@
-;; jerboa-ethereal/dissectors/dns.ss
-;; RFC 1035: DOMAIN NAMES - IMPLEMENTATION AND SPECIFICATION
+;; packet-dns.c
+;; Routines for DNS packet disassembly
+;; Copyright 2004, Nicolas DICHTEL - 6WIND - <nicolas.dichtel@6wind.com>
 ;;
-;; DNS header parsing and basic query/response handling
-;; Supports UDP and TCP transport
-;; Note: Full domain name decompression is complex; basic version extracts header only
+;; Wireshark - Network traffic analyzer
+;; By Gerald Combs <gerald@wireshark.org>
+;; Copyright 1998 Gerald Combs
+;;
+;; SPDX-License-Identifier: GPL-2.0-or-later
+;;
+
+;; jerboa-ethereal/dissectors/dns.ss
+;; Auto-generated from wireshark/epan/dissectors/packet-dns.c
+;; RFC 1034
 
 (import (jerboa prelude))
-;; ── Protocol Helpers (from lib/dissector/protocol.ss) ────────────────────
 
+;; ── Protocol Helpers ─────────────────────────────────────────────────
 (def (read-u8 buf offset)
   (if (>= offset (bytevector-length buf))
       (err "Buffer overrun")
@@ -17,6 +25,13 @@
   (if (> (+ offset 2) (bytevector-length buf))
       (err "Buffer overrun")
       (ok (bytevector-u16-ref buf offset (endianness big)))))
+
+(def (read-u24be buf offset)
+  (if (> (+ offset 3) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (+ (* (bytevector-u8-ref buf offset) 65536)
+             (* (bytevector-u8-ref buf (+ offset 1)) 256)
+             (bytevector-u8-ref buf (+ offset 2))))))
 
 (def (read-u32be buf offset)
   (if (> (+ offset 4) (bytevector-length buf))
@@ -33,6 +48,16 @@
       (err "Buffer overrun")
       (ok (bytevector-u32-ref buf offset (endianness little)))))
 
+(def (read-u64be buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness big)))))
+
+(def (read-u64le buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness little)))))
+
 (def (slice buf offset len)
   (if (> (+ offset len) (bytevector-length buf))
       (err "Buffer overrun")
@@ -42,9 +67,6 @@
 
 (def (extract-bits val mask shift)
   (bitwise-arithmetic-shift-right (bitwise-and val mask) shift))
-
-(def (validate pred msg)
-  (if pred (ok #t) (err msg)))
 
 (def (fmt-ipv4 addr)
   (let ((b0 (bitwise-arithmetic-shift-right addr 24))
@@ -62,286 +84,178 @@
 (def (fmt-hex val)
   (str "0x" (number->string val 16)))
 
+(def (fmt-oct val)
+  (str "0" (number->string val 8)))
+
 (def (fmt-port port)
   (number->string port))
 
-(def (ip-protocol->protocol num)
-  (case num
-    ((1) 'icmp) ((6) 'tcp) ((17) 'udp)
-    ((41) 'ipv6) ((58) 'icmpv6) (else #f)))
+(def (fmt-bytes bv)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bv))
+    " "))
 
+(def (fmt-ipv6-address bytes)
+  (let loop ((i 0) (parts '()))
+    (if (>= i 16)
+        (string-join (reverse parts) ":")
+        (loop (+ i 2)
+              (cons (let ((w (+ (* (bytevector-u8-ref bytes i) 256)
+                                (bytevector-u8-ref bytes (+ i 1)))))
+                      (number->string w 16))
+                    parts)))))
 
-
-;; ── DNS Opcode Formatter ──────────────────────────────────────────────
-
-(def (format-dns-opcode opcode-val)
-  "Format DNS operation code"
-  (case opcode-val
-    ((0) "Standard Query")
-    ((1) "Inverse Query (IQUERY) - obsolete")
-    ((2) "Server Status Request (STATUS)")
-    ((3) "Reserved")
-    ((4) "Notify")
-    ((5) "Update (DNSSEC)")
-    (else (str "Opcode " opcode-val))))
-
-(def (format-dns-rcode rcode-val)
-  "Format DNS response code"
-  (case rcode-val
-    ((0) "No Error")
-    ((1) "Format Error")
-    ((2) "Server Failure")
-    ((3) "Name Error (NXDOMAIN)")
-    ((4) "Not Implemented")
-    ((5) "Query Refused")
-    ((6) "Name Exists When It Should Not")
-    ((7) "RR Set Exists When It Should Not")
-    ((8) "RR Set That Should Exist Does Not")
-    ((9) "Server Not Authoritative")
-    ((10) "Name Not in Zone")
-    ((16) "DNSSEC Bad Old Signature (BADSIG)")
-    ((17) "DNSSEC Bad Signature (BADKEY)")
-    ((18) "DNSSEC Bad Time (BADTIME)")
-    ((19) "Bad TKEY Mode")
-    ((20) "Duplicate Key Name")
-    ((21) "Bad Algorithm Name")
-    (else (str "RCode " rcode-val))))
-
-(def (format-dns-type type-val)
-  "Format DNS resource record type"
-  (case type-val
-    ((1) "A (IPv4 Address)")
-    ((2) "NS (Name Server)")
-    ((3) "MD (Mail Destination)")
-    ((4) "MF (Mail Forwarder)")
-    ((5) "CNAME (Canonical Name)")
-    ((6) "SOA (Start of Authority)")
-    ((7) "MB (Mailbox)")
-    ((8) "MG (Mail Group)")
-    ((9) "MR (Mail Rename)")
-    ((10) "NULL")
-    ((11) "WKS (Well Known Service)")
-    ((12) "PTR (Pointer)")
-    ((13) "HINFO (Host Info)")
-    ((14) "MINFO (Mailbox Info)")
-    ((15) "MX (Mail Exchange)")
-    ((16) "TXT (Text)")
-    ((28) "AAAA (IPv6 Address)")
-    ((33) "SRV (Service)")
-    ((35) "NAPTR (Naming Authority Pointer)")
-    ((37) "CERT (Certificate)")
-    ((39) "DNAME (Delegation Name)")
-    ((41) "OPT (Option)")
-    ((42) "APL (Address Prefix List)")
-    ((43) "DS (Delegation Signer)")
-    ((46) "RRSIG (RRSIG)")
-    ((47) "NSEC")
-    ((48) "DNSKEY (DNS Key)")
-    ((50) "NSEC3")
-    ((51) "NSEC3PARAM")
-    ((255) "ANY (All types)")
-    ((32769) "TKEY (Transaction Key)")
-    ((32770) "TSIG (Transaction Signature)")
-    ((32771) "IXFR (Incremental Zone Transfer)")
-    ((32772) "AXFR (Zone Transfer)")
-    ((32773) "MAILB (Mail Box)")
-    ((32774) "MAILA (Mail Agent)")
-    (else (str "Type " type-val))))
-
-(def (format-dns-class class-val)
-  "Format DNS resource record class"
-  (case class-val
-    ((1) "IN (Internet)")
-    ((2) "CS (CSNET)")
-    ((3) "CH (CHAOS)")
-    ((4) "HS (Hesiod)")
-    ((255) "ANY (Any class)")
-    (else (str "Class " class-val))))
-
-;; ── Core DNS Dissector ────────────────────────────────────────────────
-
+;; ── Dissector ──────────────────────────────────────────────────────
 (def (dissect-dns buffer)
-  "Parse DNS message from bytevector
-   Returns (ok fields) or (err message)
-
-   Structure (12-byte header minimum):
-   [0:2)   transaction ID
-   [2:4)   flags (QR, Opcode, AA, TC, RD, RA, Z, AD, CD, RCode)
-   [4:6)   question count
-   [6:8)   answer count
-   [8:10)  authority count
-   [10:12) additional count
-   [12:)   questions, answers, authority, additional sections"
-
+  "Domain Name System"
   (try
-    ;; Validate minimum size
-    (unwrap (validate (>= (bytevector-length buffer) 12)
-                         "DNS message too short (< 12 bytes)")))
+    (let* (
+           (extraneous-length (unwrap (read-u32be buffer 0)))
+           (unsolicited (unwrap (read-u8 buffer 0)))
+           (retransmit-response-in (unwrap (read-u32be buffer 0)))
+           (retransmission (unwrap (read-u8 buffer 0)))
+           (retransmit-request-in (unwrap (read-u32be buffer 0)))
+           (dnskey-key-id (unwrap (read-u16be buffer 0)))
+           (key-key-id (unwrap (read-u16be buffer 0)))
+           (qry-name (unwrap (slice buffer 4 1)))
+           (qry-name-len (unwrap (read-u16be buffer 4)))
+           (count-labels (unwrap (read-u16be buffer 4)))
+           (srv-instance (unwrap (slice buffer 8 1)))
+           (srv-service (unwrap (slice buffer 8 1)))
+           (srv-proto (unwrap (slice buffer 8 1)))
+           (srv-name (unwrap (slice buffer 8 1)))
+           (rr-ttl (unwrap (read-u32be buffer 12)))
+           (rr-name (unwrap (slice buffer 16 1)))
+           (rr-udp-payload-size-mdns (unwrap (read-u16be buffer 18)))
+           (rr-cache-flush (unwrap (read-u8 buffer 18)))
+           (rr-udp-payload-size (unwrap (read-u16be buffer 18)))
+           (rr-ext-rcode (unwrap (read-u8 buffer 20)))
+           (rr-edns0-version (unwrap (read-u8 buffer 20)))
+           (rr-z (unwrap (read-u16be buffer 20)))
+           (rr-z-do (unwrap (read-u8 buffer 20)))
+           (rr-z-reserved (unwrap (read-u16be buffer 20)))
+           (rr-len (unwrap (read-u16be buffer 22)))
+           (dnscrypt-magic (unwrap (slice buffer 80 4)))
+           (dnscrypt-protocol-version (unwrap (read-u16be buffer 86)))
+           (dnscrypt-signature (unwrap (slice buffer 88 64)))
+           (dnscrypt-resolver-pk (unwrap (slice buffer 152 32)))
+           (dnscrypt-client-magic (unwrap (slice buffer 184 8)))
+           (dnscrypt-serial-number (unwrap (slice buffer 192 4)))
+           (naptr-order (unwrap (read-u16be buffer 273)))
+           (naptr-preference (unwrap (read-u16be buffer 275)))
+           (naptr-flags-length (unwrap (read-u8 buffer 277)))
+           (naptr-flags (unwrap (slice buffer 278 1)))
+           (naptr-service-length (unwrap (read-u8 buffer 278)))
+           (naptr-service (unwrap (slice buffer 279 1)))
+           (naptr-regex-length (unwrap (read-u8 buffer 279)))
+           (naptr-regex (unwrap (slice buffer 280 1)))
+           (naptr-replacement-length (unwrap (read-u8 buffer 280)))
+           (naptr-replacement (unwrap (slice buffer 280 1)))
+           (dso-tlv-length (unwrap (read-u16be buffer 561)))
+           (dso-tlv-keepalive-inactivity (unwrap (read-u32be buffer 563)))
+           (dso-tlv-keepalive-interval (unwrap (read-u32be buffer 567)))
+           (dso-tlv-retrydelay-retrydelay (unwrap (read-u32be buffer 571)))
+           (dso-tlv-encpad-padding (unwrap (slice buffer 575 1)))
+           (dso-tlv-data (unwrap (slice buffer 575 1)))
+           (length (unwrap (read-u16be buffer 575)))
+           (transaction-id (unwrap (read-u16be buffer 575)))
+           (flags (unwrap (read-u16be buffer 575)))
+           (flags-response (unwrap (read-u8 buffer 575)))
+           (flags-conflict-response (unwrap (read-u8 buffer 575)))
+           (flags-conflict-query (unwrap (read-u8 buffer 575)))
+           (flags-truncated (unwrap (read-u8 buffer 575)))
+           (flags-tentative (unwrap (read-u8 buffer 575)))
+           (flags-authoritative (unwrap (read-u8 buffer 575)))
+           (flags-recdesired (unwrap (read-u8 buffer 575)))
+           (flags-recavail (unwrap (read-u8 buffer 575)))
+           (flags-z (unwrap (read-u8 buffer 575)))
+           (flags-authenticated (unwrap (read-u8 buffer 575)))
+           (flags-ad (unwrap (read-u8 buffer 575)))
+           (flags-checkdisable (unwrap (read-u8 buffer 575)))
+           (count-zones (unwrap (read-u16be buffer 575)))
+           (count-questions (unwrap (read-u16be buffer 575)))
+           (count-prerequisites (unwrap (read-u16be buffer 575)))
+           (count-answers (unwrap (read-u16be buffer 575)))
+           (count-updates (unwrap (read-u16be buffer 575)))
+           (count-auth-rr (unwrap (read-u16be buffer 575)))
+           (count-add-rr (unwrap (read-u16be buffer 575)))
+           )
 
-    (let* ((transaction-id-res (read-u16be buffer 0))
-           (transaction-id (unwrap transaction-id-res))
+      (ok (list
+        (cons 'extraneous-length (list (cons 'raw extraneous-length) (cons 'formatted (number->string extraneous-length))))
+        (cons 'unsolicited (list (cons 'raw unsolicited) (cons 'formatted (number->string unsolicited))))
+        (cons 'retransmit-response-in (list (cons 'raw retransmit-response-in) (cons 'formatted (number->string retransmit-response-in))))
+        (cons 'retransmission (list (cons 'raw retransmission) (cons 'formatted (number->string retransmission))))
+        (cons 'retransmit-request-in (list (cons 'raw retransmit-request-in) (cons 'formatted (number->string retransmit-request-in))))
+        (cons 'dnskey-key-id (list (cons 'raw dnskey-key-id) (cons 'formatted (number->string dnskey-key-id))))
+        (cons 'key-key-id (list (cons 'raw key-key-id) (cons 'formatted (number->string key-key-id))))
+        (cons 'qry-name (list (cons 'raw qry-name) (cons 'formatted (utf8->string qry-name))))
+        (cons 'qry-name-len (list (cons 'raw qry-name-len) (cons 'formatted (number->string qry-name-len))))
+        (cons 'count-labels (list (cons 'raw count-labels) (cons 'formatted (number->string count-labels))))
+        (cons 'srv-instance (list (cons 'raw srv-instance) (cons 'formatted (utf8->string srv-instance))))
+        (cons 'srv-service (list (cons 'raw srv-service) (cons 'formatted (utf8->string srv-service))))
+        (cons 'srv-proto (list (cons 'raw srv-proto) (cons 'formatted (utf8->string srv-proto))))
+        (cons 'srv-name (list (cons 'raw srv-name) (cons 'formatted (utf8->string srv-name))))
+        (cons 'rr-ttl (list (cons 'raw rr-ttl) (cons 'formatted (number->string rr-ttl))))
+        (cons 'rr-name (list (cons 'raw rr-name) (cons 'formatted (utf8->string rr-name))))
+        (cons 'rr-udp-payload-size-mdns (list (cons 'raw rr-udp-payload-size-mdns) (cons 'formatted (fmt-hex rr-udp-payload-size-mdns))))
+        (cons 'rr-cache-flush (list (cons 'raw rr-cache-flush) (cons 'formatted (number->string rr-cache-flush))))
+        (cons 'rr-udp-payload-size (list (cons 'raw rr-udp-payload-size) (cons 'formatted (number->string rr-udp-payload-size))))
+        (cons 'rr-ext-rcode (list (cons 'raw rr-ext-rcode) (cons 'formatted (fmt-hex rr-ext-rcode))))
+        (cons 'rr-edns0-version (list (cons 'raw rr-edns0-version) (cons 'formatted (number->string rr-edns0-version))))
+        (cons 'rr-z (list (cons 'raw rr-z) (cons 'formatted (fmt-hex rr-z))))
+        (cons 'rr-z-do (list (cons 'raw rr-z-do) (cons 'formatted (if (= rr-z-do 0) "Cannot handle DNSSEC security RRs" "Accepts DNSSEC security RRs"))))
+        (cons 'rr-z-reserved (list (cons 'raw rr-z-reserved) (cons 'formatted (fmt-hex rr-z-reserved))))
+        (cons 'rr-len (list (cons 'raw rr-len) (cons 'formatted (number->string rr-len))))
+        (cons 'dnscrypt-magic (list (cons 'raw dnscrypt-magic) (cons 'formatted (utf8->string dnscrypt-magic))))
+        (cons 'dnscrypt-protocol-version (list (cons 'raw dnscrypt-protocol-version) (cons 'formatted (fmt-hex dnscrypt-protocol-version))))
+        (cons 'dnscrypt-signature (list (cons 'raw dnscrypt-signature) (cons 'formatted (fmt-bytes dnscrypt-signature))))
+        (cons 'dnscrypt-resolver-pk (list (cons 'raw dnscrypt-resolver-pk) (cons 'formatted (fmt-bytes dnscrypt-resolver-pk))))
+        (cons 'dnscrypt-client-magic (list (cons 'raw dnscrypt-client-magic) (cons 'formatted (fmt-bytes dnscrypt-client-magic))))
+        (cons 'dnscrypt-serial-number (list (cons 'raw dnscrypt-serial-number) (cons 'formatted (fmt-bytes dnscrypt-serial-number))))
+        (cons 'naptr-order (list (cons 'raw naptr-order) (cons 'formatted (number->string naptr-order))))
+        (cons 'naptr-preference (list (cons 'raw naptr-preference) (cons 'formatted (number->string naptr-preference))))
+        (cons 'naptr-flags-length (list (cons 'raw naptr-flags-length) (cons 'formatted (number->string naptr-flags-length))))
+        (cons 'naptr-flags (list (cons 'raw naptr-flags) (cons 'formatted (utf8->string naptr-flags))))
+        (cons 'naptr-service-length (list (cons 'raw naptr-service-length) (cons 'formatted (number->string naptr-service-length))))
+        (cons 'naptr-service (list (cons 'raw naptr-service) (cons 'formatted (utf8->string naptr-service))))
+        (cons 'naptr-regex-length (list (cons 'raw naptr-regex-length) (cons 'formatted (number->string naptr-regex-length))))
+        (cons 'naptr-regex (list (cons 'raw naptr-regex) (cons 'formatted (utf8->string naptr-regex))))
+        (cons 'naptr-replacement-length (list (cons 'raw naptr-replacement-length) (cons 'formatted (number->string naptr-replacement-length))))
+        (cons 'naptr-replacement (list (cons 'raw naptr-replacement) (cons 'formatted (utf8->string naptr-replacement))))
+        (cons 'dso-tlv-length (list (cons 'raw dso-tlv-length) (cons 'formatted (number->string dso-tlv-length))))
+        (cons 'dso-tlv-keepalive-inactivity (list (cons 'raw dso-tlv-keepalive-inactivity) (cons 'formatted (number->string dso-tlv-keepalive-inactivity))))
+        (cons 'dso-tlv-keepalive-interval (list (cons 'raw dso-tlv-keepalive-interval) (cons 'formatted (number->string dso-tlv-keepalive-interval))))
+        (cons 'dso-tlv-retrydelay-retrydelay (list (cons 'raw dso-tlv-retrydelay-retrydelay) (cons 'formatted (number->string dso-tlv-retrydelay-retrydelay))))
+        (cons 'dso-tlv-encpad-padding (list (cons 'raw dso-tlv-encpad-padding) (cons 'formatted (fmt-bytes dso-tlv-encpad-padding))))
+        (cons 'dso-tlv-data (list (cons 'raw dso-tlv-data) (cons 'formatted (fmt-bytes dso-tlv-data))))
+        (cons 'length (list (cons 'raw length) (cons 'formatted (number->string length))))
+        (cons 'transaction-id (list (cons 'raw transaction-id) (cons 'formatted (fmt-hex transaction-id))))
+        (cons 'flags (list (cons 'raw flags) (cons 'formatted (fmt-hex flags))))
+        (cons 'flags-response (list (cons 'raw flags-response) (cons 'formatted (if (= flags-response 0) "Message is a query" "Message is a response"))))
+        (cons 'flags-conflict-response (list (cons 'raw flags-conflict-response) (cons 'formatted (if (= flags-conflict-response 0) "The name is considered unique" "The name is not considered unique"))))
+        (cons 'flags-conflict-query (list (cons 'raw flags-conflict-query) (cons 'formatted (if (= flags-conflict-query 0) "None" "The sender received multiple responses"))))
+        (cons 'flags-truncated (list (cons 'raw flags-truncated) (cons 'formatted (if (= flags-truncated 0) "Message is not truncated" "Message is truncated"))))
+        (cons 'flags-tentative (list (cons 'raw flags-tentative) (cons 'formatted (if (= flags-tentative 0) "Not tentative" "Tentative"))))
+        (cons 'flags-authoritative (list (cons 'raw flags-authoritative) (cons 'formatted (if (= flags-authoritative 0) "Server is not an authority for domain" "Server is an authority for domain"))))
+        (cons 'flags-recdesired (list (cons 'raw flags-recdesired) (cons 'formatted (if (= flags-recdesired 0) "Don't do query recursively" "Do query recursively"))))
+        (cons 'flags-recavail (list (cons 'raw flags-recavail) (cons 'formatted (if (= flags-recavail 0) "Server can't do recursive queries" "Server can do recursive queries"))))
+        (cons 'flags-z (list (cons 'raw flags-z) (cons 'formatted (if (= flags-z 0) "reserved (0)" "reserved - incorrect!"))))
+        (cons 'flags-authenticated (list (cons 'raw flags-authenticated) (cons 'formatted (if (= flags-authenticated 0) "Answer/authority portion was not authenticated by the server" "Answer/authority portion was authenticated by the server"))))
+        (cons 'flags-ad (list (cons 'raw flags-ad) (cons 'formatted (if (= flags-ad 0) "False" "True"))))
+        (cons 'flags-checkdisable (list (cons 'raw flags-checkdisable) (cons 'formatted (if (= flags-checkdisable 0) "Unacceptable" "Acceptable"))))
+        (cons 'count-zones (list (cons 'raw count-zones) (cons 'formatted (number->string count-zones))))
+        (cons 'count-questions (list (cons 'raw count-questions) (cons 'formatted (number->string count-questions))))
+        (cons 'count-prerequisites (list (cons 'raw count-prerequisites) (cons 'formatted (number->string count-prerequisites))))
+        (cons 'count-answers (list (cons 'raw count-answers) (cons 'formatted (number->string count-answers))))
+        (cons 'count-updates (list (cons 'raw count-updates) (cons 'formatted (number->string count-updates))))
+        (cons 'count-auth-rr (list (cons 'raw count-auth-rr) (cons 'formatted (number->string count-auth-rr))))
+        (cons 'count-add-rr (list (cons 'raw count-add-rr) (cons 'formatted (number->string count-add-rr))))
+        )))
 
-           (flags-res (read-u16be buffer 2))
-           (flags (unwrap flags-res))
-
-           ;; Parse flag bits
-           (qr-flag (extract-bits flags #x8000 15))
-           (opcode (extract-bits flags #x7800 11))
-           (aa-flag (extract-bits flags #x0400 10))
-           (tc-flag (extract-bits flags #x0200 9))
-           (rd-flag (extract-bits flags #x0100 8))
-           (ra-flag (extract-bits flags #x0080 7))
-           (z-flag (extract-bits flags #x0040 6))
-           (ad-flag (extract-bits flags #x0020 5))
-           (cd-flag (extract-bits flags #x0010 4))
-           (rcode (extract-bits flags #x000F 0))
-
-           (question-count-res (read-u16be buffer 4))
-           (question-count (unwrap question-count-res))
-
-           (answer-count-res (read-u16be buffer 6))
-           (answer-count (unwrap answer-count-res))
-
-           (authority-count-res (read-u16be buffer 8))
-           (authority-count (unwrap authority-count-res))
-
-           (additional-count-res (read-u16be buffer 10))
-           (additional-count (unwrap additional-count-res)))
-
-      (ok `((transaction-id . ((raw . ,transaction-id)
-                              (formatted . ,(fmt-hex transaction-id))))
-            (is-response . ,qr-flag)
-            (opcode . ((raw . ,opcode)
-                      (formatted . ,(format-dns-opcode opcode))))
-            (authoritative-answer . ,aa-flag)
-            (truncated . ,tc-flag)
-            (recursion-desired . ,rd-flag)
-            (recursion-available . ,ra-flag)
-            (authentic-data . ,ad-flag)
-            (checking-disabled . ,cd-flag)
-            (response-code . ((raw . ,rcode)
-                             (formatted . ,(format-dns-rcode rcode))))
-            (question-count . ,question-count)
-            (answer-count . ,answer-count)
-            (authority-count . ,authority-count)
-            (additional-count . ,additional-count)
-            (payload . ,(if (> (bytevector-length buffer) 12)
-                           (unwrap (slice buffer 12 (- (bytevector-length buffer) 12)))
-                           #f)))))
-
-    ;; Error handling
     (catch (e)
       (err (str "DNS parse error: " e)))))
 
-;; ── Domain Name Decompression ────────────────────────────────────
-
-(def (decompress-domain-name buffer offset)
-  "Decompress DNS domain name from buffer starting at offset
-   Returns (name new-offset) or (err message)
-   Handles both literal names and message compression pointers (RFC 1035)"
-
-  (let loop ((offset offset)
-             (labels '())
-             (max-iterations 255))
-
-    (if (<= max-iterations 0)
-        (err "Domain name decompression: maximum iterations exceeded")
-        (if (>= offset (bytevector-length buffer))
-            (err "Domain name: offset beyond buffer end")
-            (let ((len-byte-res (read-u8 buffer offset)))
-              (if (err? len-byte-res)
-                  len-byte-res
-                  (let ((len-byte (unwrap len-byte-res)))
-                    (cond
-                      ;; End of name (length 0)
-                      ((= len-byte 0)
-                       (ok (cons (string-join (reverse labels) ".") (+ offset 1))))
-
-                      ;; Pointer (high 2 bits are 11)
-                      ((>= len-byte #xC0)
-                       (if (>= (+ offset 1) (bytevector-length buffer))
-                           (err "Domain name: incomplete pointer")
-                           (let ((ptr-res (read-u16be buffer offset)))
-                             (if (err? ptr-res)
-                                 ptr-res
-                                 (let* ((ptr-word (unwrap ptr-res))
-                                        (ptr-offset (bitwise-and ptr-word #x3FFF)))
-                                   ;; Recursively decompress at pointer offset, then continue
-                                   (match (decompress-domain-name buffer ptr-offset)
-                                     ((ok (cons ptr-name _))
-                                      (ok (cons (if (null? labels)
-                                                   ptr-name
-                                                   (str (string-join (reverse labels) ".") "." ptr-name))
-                                               (+ offset 2))))
-                                     ((err e) (err e))))))))
-
-                      ;; Normal label (length < 64)
-                      ((< len-byte 64)
-                       (if (> (+ offset 1 len-byte) (bytevector-length buffer))
-                           (err "Domain name: label extends beyond buffer")
-                           (let ((label-bytes (unwrap (slice buffer (+ offset 1) len-byte))))
-                             (try
-                               (let ((label-str (bytevector->string label-bytes
-                                                                    (make-transcoder (utf-8-codec)))))
-                                 (loop (+ offset 1 len-byte)
-                                      (cons label-str labels)
-                                      (- max-iterations 1)))
-                               (catch (e) (err "Domain name: invalid label encoding"))))))
-
-                      ;; Invalid (reserved bits)
-                      (else
-                       (err (str "Domain name: invalid length byte " len-byte))))))))))
-
-;; ── Record Extraction ──────────────────────────────────────────────
-
-(def (extract-dns-question buffer offset)
-  "Extract single DNS question from buffer
-   Returns (name type class new-offset) or error"
-
-  (match (decompress-domain-name buffer offset)
-    ((ok (cons qname new-offset))
-     (if (> (+ new-offset 4) (bytevector-length buffer))
-         (err "Question: incomplete type/class fields")
-         (let ((type-res (read-u16be buffer new-offset))
-               (class-res (read-u16be buffer (+ new-offset 2))))
-           (match (list type-res class-res)
-             ((list (ok qtype) (ok qclass))
-              (ok (list qname qtype qclass (+ new-offset 4))))
-             (err "Question: invalid type or class"))))))
-    ((err e) (err (str "Question: " e)))))
-
-(def (extract-dns-answer buffer offset)
-  "Extract single DNS answer RR from buffer
-   Returns (name type class ttl rdlength rdata new-offset) or error"
-
-  (match (decompress-domain-name buffer offset)
-    ((ok (cons rname new-offset))
-     (if (> (+ new-offset 10) (bytevector-length buffer))
-         (err "Answer: incomplete type/class/ttl/rdlen fields")
-         (let ((type-res (read-u16be buffer new-offset))
-               (class-res (read-u16be buffer (+ new-offset 2)))
-               (ttl-res (read-u32be buffer (+ new-offset 4)))
-               (rdlen-res (read-u16be buffer (+ new-offset 8))))
-           (match (list type-res class-res ttl-res rdlen-res)
-             ((list (ok rtype) (ok rclass) (ok rttl) (ok rdlen))
-              (if (> (+ new-offset 10 rdlen) (bytevector-length buffer))
-                  (err "Answer: rdata extends beyond buffer")
-                  (let ((rdata (unwrap (slice buffer (+ new-offset 10) rdlen))))
-                    (ok (list rname rtype rclass rttl rdlen rdata
-                             (+ new-offset 10 rdlen))))))
-             (err "Answer: invalid fields"))))))
-    ((err e) (err (str "Answer: " e)))))
-
-;; ── Exported API ───────────────────────────────────────────────────────
-
-;; dissect-dns: main entry point - parses 12-byte header and flags
-;; decompress-domain-name: RFC 1035 compression pointer handling
-;; extract-dns-question: parse DNS question (name, type, class)
-;; extract-dns-answer: parse DNS answer RR (name, type, class, TTL, rdata)
-;; format-dns-opcode: opcode formatter
-;; format-dns-rcode: response code formatter
-;; format-dns-type: record type formatter
-;; format-dns-class: record class formatter
-;;
-;; Phase 6 Complete: Full DNS dissection with domain name decompression,
-;;                   RFC 1035 compression pointers, and record extraction
+;; dissect-dns: parse DNS from bytevector
+;; Returns (ok fields-alist) or (err message)

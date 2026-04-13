@@ -1,0 +1,136 @@
+;; packet-exec.c
+;; Routines for exec (rexec) dissection
+;; Copyright 2006, Stephen Fisher (see AUTHORS file)
+;;
+;; Wireshark - Network traffic analyzer
+;; By Gerald Combs <gerald@wireshark.org>
+;; Copyright 1998 Gerald Combs
+;;
+;; Based on BSD rexecd code/man page and parts of packet-rlogin.c
+;;
+;; SPDX-License-Identifier: GPL-2.0-or-later
+;;
+
+;; jerboa-ethereal/dissectors/exec.ss
+;; Auto-generated from wireshark/epan/dissectors/packet-exec.c
+
+(import (jerboa prelude))
+
+;; ── Protocol Helpers ─────────────────────────────────────────────────
+(def (read-u8 buf offset)
+  (if (>= offset (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u8-ref buf offset))))
+
+(def (read-u16be buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness big)))))
+
+(def (read-u24be buf offset)
+  (if (> (+ offset 3) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (+ (* (bytevector-u8-ref buf offset) 65536)
+             (* (bytevector-u8-ref buf (+ offset 1)) 256)
+             (bytevector-u8-ref buf (+ offset 2))))))
+
+(def (read-u32be buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness big)))))
+
+(def (read-u16le buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness little)))))
+
+(def (read-u32le buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness little)))))
+
+(def (read-u64be buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness big)))))
+
+(def (read-u64le buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness little)))))
+
+(def (slice buf offset len)
+  (if (> (+ offset len) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (let ((result (make-bytevector len)))
+            (bytevector-copy! buf offset result 0 len)
+            result))))
+
+(def (extract-bits val mask shift)
+  (bitwise-arithmetic-shift-right (bitwise-and val mask) shift))
+
+(def (fmt-ipv4 addr)
+  (let ((b0 (bitwise-arithmetic-shift-right addr 24))
+        (b1 (bitwise-and (bitwise-arithmetic-shift-right addr 16) 255))
+        (b2 (bitwise-and (bitwise-arithmetic-shift-right addr 8) 255))
+        (b3 (bitwise-and addr 255)))
+    (str b0 "." b1 "." b2 "." b3)))
+
+(def (fmt-mac bytes)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bytes))
+    ":"))
+
+(def (fmt-hex val)
+  (str "0x" (number->string val 16)))
+
+(def (fmt-oct val)
+  (str "0" (number->string val 8)))
+
+(def (fmt-port port)
+  (number->string port))
+
+(def (fmt-bytes bv)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bv))
+    " "))
+
+(def (fmt-ipv6-address bytes)
+  (let loop ((i 0) (parts '()))
+    (if (>= i 16)
+        (string-join (reverse parts) ":")
+        (loop (+ i 2)
+              (cons (let ((w (+ (* (bytevector-u8-ref bytes i) 256)
+                                (bytevector-u8-ref bytes (+ i 1)))))
+                      (number->string w 16))
+                    parts)))))
+
+;; ── Dissector ──────────────────────────────────────────────────────
+(def (dissect-exec buffer)
+  "Remote Process Execution"
+  (try
+    (let* (
+           (server-client-data (unwrap (slice buffer 0 1)))
+           (client-server-data (unwrap (slice buffer 0 1)))
+           (stderr-port (unwrap (slice buffer 0 1)))
+           (username (unwrap (slice buffer 0 1)))
+           (password (unwrap (slice buffer 0 1)))
+           (command (unwrap (slice buffer 0 1)))
+           )
+
+      (ok (list
+        (cons 'server-client-data (list (cons 'raw server-client-data) (cons 'formatted (fmt-bytes server-client-data))))
+        (cons 'client-server-data (list (cons 'raw client-server-data) (cons 'formatted (fmt-bytes client-server-data))))
+        (cons 'stderr-port (list (cons 'raw stderr-port) (cons 'formatted (utf8->string stderr-port))))
+        (cons 'username (list (cons 'raw username) (cons 'formatted (utf8->string username))))
+        (cons 'password (list (cons 'raw password) (cons 'formatted (utf8->string password))))
+        (cons 'command (list (cons 'raw command) (cons 'formatted (utf8->string command))))
+        )))
+
+    (catch (e)
+      (err (str "EXEC parse error: " e)))))
+
+;; dissect-exec: parse EXEC from bytevector
+;; Returns (ok fields-alist) or (err message)

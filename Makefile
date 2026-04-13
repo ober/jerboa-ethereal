@@ -1,32 +1,39 @@
-.PHONY: build test clean help check linux linux-local docker verify-harden status
+.PHONY: build test clean help check linux linux-local docker verify-harden status \
+        qt-shim qt qt-offscreen qt-screenshot qt-repl
 
 help:
 	@echo "jerboa-ethereal - PCAP packet analyzer"
 	@echo "════════════════════════════════════════════════════════"
-	@echo "Phase 6 Complete: 13 protocols, full DNS, flows, statistics"
-	@echo "Phase 7 In Progress: Static binary, Docker, advanced features"
 	@echo ""
 	@echo "Development:"
-	@echo "  make build         - Compile all modules"
-	@echo "  make test          - Run test suite"
-	@echo "  make check         - Run static checks"
-	@echo "  make status        - Show project status"
+	@echo "  make build              - Compile all modules"
+	@echo "  make test               - Run test suite"
+	@echo "  make check              - Run static checks"
+	@echo "  make status             - Show project status"
 	@echo ""
-	@echo "Static binary (Linux, Phase 7):"
-	@echo "  make linux         - Build static binary via Docker"
-	@echo "  make linux-local   - Build locally (requires musl-gcc)"
-	@echo "  make docker        - Docker build"
-	@echo "  make verify-harden - Verify binary hardening"
+	@echo "Qt GUI (wafter-qt):"
+	@echo "  make qt-shim            - Build qt/tcp_repl_shim.so"
+	@echo "  make qt                 - Launch Qt GUI (needs X11/Wayland)"
+	@echo "  make qt-offscreen       - Launch Qt GUI headless"
+	@echo "  make qt-screenshot      - Headless, save PNG to /tmp/wafter-snap.png"
+	@echo "  make qt-repl            - Headless with auto-assigned TCP REPL"
+	@echo "  make qt-screenshot-pcap PCAP=file.pcap OUT=/tmp/snap.png"
 	@echo ""
-	@echo "Tools:"
+	@echo "Static binary (Linux):"
+	@echo "  make linux              - Build static binary via Docker"
+	@echo "  make linux-local        - Build locally (requires musl-gcc)"
+	@echo "  make docker             - Docker build"
+	@echo "  make verify-harden      - Verify binary hardening"
+	@echo ""
+	@echo "Tools (TUI):"
 	@echo "  scheme wafter.ss <pcap> stats"
 	@echo "  scheme wafter.ss <pcap> list 10"
 	@echo "  scheme wafter.ss <pcap> protocols"
 	@echo ""
 	@echo "Cleanup:"
-	@echo "  make clean         - Remove artifacts"
+	@echo "  make clean              - Remove artifacts"
 	@echo ""
-	@echo "See docs/BUILD_STATIC.md and docs/IMPLEMENTATION_ROADMAP.md"
+	@echo "See docs/BUILD_STATIC.md"
 
 status:
 	@echo ""
@@ -73,6 +80,7 @@ clean:
 	find lib -name "*.wpo" -delete
 	find . -name "*~" -delete
 	rm -f wafter-musl wafter-musl.sha256
+	rm -f qt/tcp_repl_shim.so qt/libqt_shim.so
 
 # ── Static Binary Builds (Linux) ────────────────────────────────────────────
 # See docs/BUILD_STATIC.md for detailed documentation
@@ -105,5 +113,68 @@ verify-harden: linux
 	@if strings wafter-musl | grep -q "$(HOME)"; then echo "  WARN: home paths found"; else echo "  PASS: no home paths"; fi
 	@[ -f wafter-musl.sha256 ] && echo "  PASS: SHA256 hash exists" || echo "  FAIL: no hash"
 	@./wafter-musl --version >/dev/null 2>&1 && echo "  PASS: binary runs" || echo "  FAIL: doesn't run"
+
+# ── Qt GUI (wafter-qt) ───────────────────────────────────────────────────────
+# Requires: chez-qt at ~/mine/chez-qt and Qt6 dev libraries.
+# libqt_shim.so is compiled from jerboa-emacs/vendor/qt_shim.cpp — it provides
+# the modern threading model (qt_application_is_running) used by chez-qt.
+
+CHEZ_QT_DIR   ?= $(HOME)/mine/chez-qt
+JEMACS_VENDOR ?= $(HOME)/mine/jerboa-emacs/vendor
+QT_INC        ?= /usr/include/x86_64-linux-gnu/qt6
+
+QT_ENV = \
+	CHEZ_QT_LIB=$(CHEZ_QT_DIR) \
+	CHEZ_QT_SHIM_DIR=qt \
+	LD_PRELOAD=$(CHEZ_QT_DIR)/qt_chez_shim.so \
+	LD_LIBRARY_PATH=qt:$(CHEZ_QT_DIR):$(LD_LIBRARY_PATH)
+
+JERBOA_LIB ?= $(HOME)/mine/jerboa/lib
+QT_SCHEME = scheme --libdirs $(CHEZ_QT_DIR):$(JERBOA_LIB):lib
+
+# Build both shims into qt/
+qt-shim: qt/tcp_repl_shim.so qt/libqt_shim.so
+
+qt/tcp_repl_shim.so: qt/tcp_repl_shim.c
+	gcc -shared -fPIC -O2 -o qt/tcp_repl_shim.so qt/tcp_repl_shim.c
+
+qt/libqt_shim.so: $(JEMACS_VENDOR)/qt_shim.cpp
+	g++ -shared -fPIC -std=c++17 -O2 \
+	  -DJEMACS_CHEZ_SMP \
+	  -I$(JEMACS_VENDOR) \
+	  -I$(QT_INC) -I$(QT_INC)/QtCore -I$(QT_INC)/QtGui -I$(QT_INC)/QtWidgets \
+	  $(JEMACS_VENDOR)/qt_shim.cpp \
+	  -o qt/libqt_shim.so \
+	  -lQt6Core -lQt6Gui -lQt6Widgets -lvterm -lutil
+
+# Interactive Qt window (requires X11 or Wayland)
+qt: qt-shim
+	$(QT_ENV) QT_QPA_PLATFORM=xcb \
+	$(QT_SCHEME) --script wafter-qt.ss
+
+# Headless (no display needed — offscreen renderer)
+qt-offscreen: qt-shim
+	$(QT_ENV) QT_QPA_PLATFORM=offscreen \
+	$(QT_SCHEME) --script wafter-qt.ss
+
+# Save screenshot to /tmp/wafter-snap.png then exit (for automated review)
+qt-screenshot: qt-shim
+	$(QT_ENV) QT_QPA_PLATFORM=offscreen \
+	$(QT_SCHEME) --script wafter-qt.ss --screenshot /tmp/wafter-snap.png
+	@echo ""
+	@echo "Screenshot: /tmp/wafter-snap.png"
+
+# Load a specific pcap and screenshot it
+# Usage: make qt-screenshot-pcap PCAP=/path/to/file.pcap OUT=/tmp/snap.png
+qt-screenshot-pcap: qt-shim
+	$(QT_ENV) QT_QPA_PLATFORM=offscreen \
+	$(QT_SCHEME) --script wafter-qt.ss --screenshot $(OUT) $(PCAP)
+	@echo "Screenshot: $(OUT)"
+
+# Launch headless with auto-assigned REPL for LLM debugging
+# After launch: nc localhost <port printed on stdout>
+qt-repl: qt-shim
+	$(QT_ENV) QT_QPA_PLATFORM=offscreen \
+	$(QT_SCHEME) --script wafter-qt.ss --repl 0
 
 .DEFAULT_GOAL := help

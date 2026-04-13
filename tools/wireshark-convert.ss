@@ -171,6 +171,43 @@
             pos
             (loop (bitwise-arithmetic-shift-right m 1) (+ pos 1))))))
 
+;; Local helper used by the code generator (also emitted into generated files)
+(def (fmt-hex v) (str "0x" (number->string v 16)))
+
+;; ── C Comment Stripping ───────────────────────────────────────────────────────
+
+(def (strip-c-comments src)
+  "Remove /* */ and // comments from C source, preserving newline count."
+  (let ([slen (string-length src)])
+    (let loop ([i 0] [acc '()])
+      (cond
+        [(>= i slen) (list->string (reverse acc))]
+        ;; Block comment /* ... */
+        [(and (< (+ i 1) slen)
+              (char=? (string-ref src i) #\/)
+              (char=? (string-ref src (+ i 1)) #\*))
+         (let inner ([j (+ i 2)] [acc2 acc])
+           (cond
+             [(>= j slen) (list->string (reverse acc2))]
+             [(and (< (+ j 1) slen)
+                   (char=? (string-ref src j) #\*)
+                   (char=? (string-ref src (+ j 1)) #\/))
+              (loop (+ j 2) acc2)]
+             [(char=? (string-ref src j) #\newline)
+              (inner (+ j 1) (cons #\newline acc2))]
+             [else (inner (+ j 1) (cons #\space acc2))]))]
+        ;; Line comment // ...
+        [(and (< (+ i 1) slen)
+              (char=? (string-ref src i) #\/)
+              (char=? (string-ref src (+ i 1)) #\/))
+         (let inner ([j (+ i 2)] [acc2 acc])
+           (cond
+             [(>= j slen) (list->string (reverse acc2))]
+             [(char=? (string-ref src j) #\newline)
+              (loop (+ j 1) (cons #\newline acc2))]
+             [else (inner (+ j 1) acc2)]))]
+        [else (loop (+ i 1) (cons (string-ref src i) acc))]))))
+
 ;; ── Protocol Helpers (emitted into every generated dissector) ────────────────
 
 (def protocol-helpers
@@ -265,6 +302,58 @@
                       (number->string w 16))
                     parts)))))
 ")
+
+;; ── Copyright Extraction ──────────────────────────────────────────────────────
+
+(def (block->scheme-comment content)
+  "Convert body of /* */ comment to ;; comment lines."
+  (string-join
+    (map (lambda (line)
+           (let* ([l (string-trim line)]
+                  [l (if (and (> (string-length l) 0) (char=? (string-ref l 0) #\*))
+                         (string-trim (substring l 1 (string-length l)))
+                         l)]
+                  [l (string-trim l)])
+             (if (string=? l "") ";;" (str ";; " l))))
+         (string-split content #\newline))
+    "\n"))
+
+(def (extract-copyright src)
+  "Find the opening copyright block and return it as ;; Scheme comment lines, or \"\"."
+  (let scan ([i 0] [n (string-length src)])
+    (if (>= i n) ""
+        (let ([c (string-ref src i)])
+          (cond
+            ;; Skip leading whitespace
+            [(or (char=? c #\space) (char=? c #\newline) (char=? c #\tab) (char=? c #\return))
+             (scan (+ i 1) n)]
+            ;; /* ... */ block comment
+            [(and (< (+ i 1) n) (char=? c #\/) (char=? (string-ref src (+ i 1)) #\*))
+             (let find-end ([j (+ i 2)] [chars '()])
+               (if (>= j n)
+                   (block->scheme-comment (list->string (reverse chars)))
+                   (if (and (< (+ j 1) n)
+                            (char=? (string-ref src j) #\*)
+                            (char=? (string-ref src (+ j 1)) #\/))
+                       (block->scheme-comment (list->string (reverse chars)))
+                       (find-end (+ j 1) (cons (string-ref src j) chars)))))]
+            ;; // line comment block
+            [(and (< (+ i 1) n) (char=? c #\/) (char=? (string-ref src (+ i 1)) #\/))
+             (let collect ([pos i] [acc '()])
+               (let ([eol (or (let lf ([k pos]) (and (< k n) (if (char=? (string-ref src k) #\newline) k (lf (+ k 1))))) n)])
+                 (let* ([line (substring src pos eol)]
+                        [trimmed (string-trim line)]
+                        [is-comment? (and (>= (string-length trimmed) 2)
+                                          (char=? (string-ref trimmed 0) #\/)
+                                          (char=? (string-ref trimmed 1) #\/))])
+                   (if is-comment?
+                       (let* ([content (if (>= (string-length trimmed) 3)
+                                           (string-trim (substring trimmed 2 (string-length trimmed)))
+                                           "")]
+                              [ss-line (if (string=? content "") ";;" (str ";; " content))])
+                         (collect (min n (+ eol 1)) (cons ss-line acc)))
+                       (string-join (reverse acc) "\n")))))]
+            [else ""])))))
 
 ;; ── Data Structures ──────────────────────────────────────────────────────────
 
@@ -425,8 +514,8 @@
             (else (loop (+ i 1) depth (cons ch acc))))))))
 
 (def (count-add-items body)
-  "Count proto_tree_add_item calls in a function body (proxy for complexity)."
-  (length (re-find-all "proto_tree_add_item" body)))
+  "Count proto_tree_add_* calls in a function body (proxy for complexity)."
+  (length (re-find-all "proto_tree_add_\\w+" body)))
 
 (def (find-dissect-fn src proto)
   "Find the best dissect function body for proto (underscore form).
@@ -491,18 +580,19 @@
   "Extract all field reads from a dissect function body.
    Returns sorted list of dissect-field structs."
 
-  ;; ── Pattern 1: proto_tree_add_item* with LITERAL offset ──
+  ;; ── Pattern 1: ANY proto_tree_add_* with LITERAL offset ──
+  ;; Matches proto_tree_add_item, proto_tree_add_uint, proto_tree_add_boolean, etc.
   (let* ((lit-pat  (re (str
-                        "proto_tree_add_item(?:_ret_\\w+)?\\s*\\([^,]+,\\s*"
+                        "proto_tree_add_\\w+\\s*\\([^,]+,\\s*"
                         "(hf_\\w+)\\s*,\\s*tvb\\s*,"
-                        "\\s*(\\d+)\\s*,\\s*(-?\\d+|\\w+)\\s*,"
-                        "\\s*(ENC_\\w+|ENC_NA|0)\\s*[,)]")))
-         ;; ── Pattern 2: proto_tree_add_item* with OFFSET VARIABLE ──
+                        "\\s*(\\d+)\\s*,\\s*(-?\\d+|\\w+)")))
+         ;; ── Pattern 2: ANY proto_tree_add_* with OFFSET VARIABLE ──
+         ;; Matches common offset var names: offset, off, l_offset, l_off, pos, cur_offset
+         (off-var   "(?:offset|off|l_offset|l_off|pos|cur_offset|data_offset|start_offset)")
          (var-pat  (re (str
-                        "proto_tree_add_item(?:_ret_\\w+)?\\s*\\([^,]+,\\s*"
+                        "proto_tree_add_\\w+\\s*\\([^,]+,\\s*"
                         "(hf_\\w+)\\s*,\\s*tvb\\s*,"
-                        "\\s*offset(?:\\s*[+\\-]\\s*\\w+)?\\s*,\\s*(-?\\d+|\\w+)\\s*,"
-                        "\\s*(ENC_\\w+|ENC_NA|0)\\s*[,)]")))
+                        "\\s*" off-var "(?:\\s*[+\\-]\\s*\\w+)?\\s*,\\s*(-?\\d+|\\w+)")))
          ;; ── Pattern 3: proto_tree_add_bitmask* with LITERAL offset ──
          (bm-lit-pat (re (str
                           "proto_tree_add_bitmask(?:_with_flags)?\\s*\\([^,]+,\\s*tvb\\s*,"
@@ -511,22 +601,23 @@
          ;; ── Pattern 4: proto_tree_add_bitmask* with OFFSET VARIABLE ──
          (bm-var-pat (re (str
                           "proto_tree_add_bitmask(?:_with_flags)?\\s*\\([^,]+,\\s*tvb\\s*,"
-                          "\\s*offset(?:\\s*[+\\-]\\s*\\w+)?\\s*,\\s*(hf_\\w+)\\s*,"
+                          "\\s*" off-var "(?:\\s*[+\\-]\\s*\\w+)?\\s*,\\s*(hf_\\w+)\\s*,"
                           "\\s*\\w+\\s*,\\s*(\\w+)\\s*,\\s*(ENC_\\w+|0)\\s*[,)]")))
          ;; ── Pattern 5: offset tracking ──
-         ;; Combined: offset = N  |  offset += N  |  proto_tree_add_item(... offset ...)
+         ;; Matches: off-var=N | off-var+=N | ANY proto_tree_add_*(... off-var ...) call
          (track-pat (re (str
                          "(?:"
-                         "(?:int\\s+)?offset\\s*=\\s*(\\d+)"     ;; g0: offset = N
-                         "|offset\\s*\\+=\\s*(\\d+)"              ;; g1: offset += N
-                         "|proto_tree_add_item(?:_ret_\\w+)?\\s*\\([^,]+,\\s*(hf_\\w+)\\s*,\\s*tvb\\s*,\\s*offset(?:\\s*[+\\-]\\s*\\w+)?\\s*,\\s*(-?\\d+|\\w+)\\s*,\\s*(ENC_\\w+|ENC_NA|0)\\s*[,)]" ;; g2,g3,g4
-                         "|proto_tree_add_bitmask(?:_with_flags)?\\s*\\([^,]+,\\s*tvb\\s*,\\s*offset(?:\\s*[+\\-]\\s*\\w+)?\\s*,\\s*(hf_\\w+)\\s*,\\s*\\w+\\s*,\\s*(\\w+)\\s*,\\s*(ENC_\\w+|0)\\s*[,)]" ;; g5,g6,g7
+                         "\\b" off-var "\\s*=\\s*(\\d+)"               ;; g0: off-var = N
+                         "|\\b" off-var "\\s*\\+=\\s*(\\d+)"           ;; g1: off-var += N
+                         "|proto_tree_add_\\w+\\s*\\([^,]+,\\s*(hf_\\w+)\\s*,\\s*tvb\\s*,\\s*" off-var "(?:\\s*[+\\-]\\s*\\w+)?\\s*,\\s*(-?\\d+|\\w+)" ;; g2,g3
+                         "|proto_tree_add_bitmask(?:_with_flags)?\\s*\\([^,]+,\\s*tvb\\s*,\\s*" off-var "(?:\\s*[+\\-]\\s*\\w+)?\\s*,\\s*(hf_\\w+)\\s*,\\s*\\w+\\s*,\\s*(\\w+)\\s*,\\s*(ENC_\\w+|0)\\s*[,)]" ;; g4,g5,g6
                          ")")))
          ;; Seen hash to dedup by (hf-var . offset)
          (seen    (make-hash-table))
          (results '()))
 
     ;; Collect literal-offset fields
+    ;; lit-pat groups: (hf_var literal_offset size)
     (set! results
       (re-fold lit-pat
         (lambda (i m str acc)
@@ -534,17 +625,17 @@
                  (var (list-ref gs 0))
                  (off (string->number (list-ref gs 1)))
                  (sz  (or (string->number (list-ref gs 2)) -1))
-                 (enc (list-ref gs 3))
                  (key (cons var off)))
             (if (hash-key? seen key)
                 acc
                 (begin
                   (hash-put! seen key #t)
-                  (cons (make-dissect-field var off sz enc 'literal #f) acc)))))
+                  (cons (make-dissect-field var off sz "ENC_NA" 'literal #f) acc)))))
         '()
         src))
 
-    ;; Collect variable-offset fields (offset or offset±expr)
+    ;; Collect variable-offset fields (uses offset variable)
+    ;; var-pat groups: (hf_var size)
     (set! results
       (append
         (re-fold var-pat
@@ -552,13 +643,12 @@
             (let* ((gs  (re-match-groups m))
                    (var (list-ref gs 0))
                    (sz  (or (string->number (list-ref gs 1)) -1))
-                   (enc (list-ref gs 2))
                    (key (cons var #f)))
               (if (hash-key? seen key)
                   acc
                   (begin
                     (hash-put! seen key #t)
-                    (cons (make-dissect-field var #f sz enc 'var #f) acc)))))
+                    (cons (make-dissect-field var #f sz "ENC_NA" 'var #f) acc)))))
           '()
           src)
         results))
@@ -604,6 +694,7 @@
         results))
 
     ;; Run offset tracker to get tracked-offset fields
+    ;; New group layout: g0=set, g1=inc, g2=add-var, g3=add-sz, g4=bm-var, g5=bm-arr, g6=bm-enc
     (let* ((tracked-and-bm
             (let loop-track ((acc (cons 0 '())) (body src))
               (re-fold track-pat
@@ -611,12 +702,11 @@
                   (let* ((gs      (re-match-groups m))
                          (set-v   (list-ref gs 0))   ;; offset = N
                          (inc-v   (list-ref gs 1))   ;; offset += N
-                         (add-var (list-ref gs 2))   ;; hf_var in regular add_item
-                         (add-sz  (list-ref gs 3))   ;; size in add_item
-                         (add-enc (list-ref gs 4))   ;; enc in add_item
-                         (bm-var  (list-ref gs 5))   ;; hf_var in bitmask
-                         (bm-arr  (list-ref gs 6))   ;; array name in bitmask
-                         (bm-enc  (list-ref gs 7))   ;; enc in bitmask
+                         (add-var (list-ref gs 2))   ;; hf_var in any proto_tree_add_*
+                         (add-sz  (list-ref gs 3))   ;; size in add_*
+                         (bm-var  (list-ref gs 4))   ;; hf_var in bitmask
+                         (bm-arr  (list-ref gs 5))   ;; array name in bitmask
+                         (bm-enc  (list-ref gs 6))   ;; enc in bitmask
                          (cur-off (car cur))
                          (cur-flds (cdr cur)))
                     (cond
@@ -633,7 +723,7 @@
                                (cons cur-off
                                      (cons (make-dissect-field
                                              add-var cur-off
-                                             (or (string->number add-sz) -1) add-enc
+                                             (or (string->number add-sz) -1) "ENC_NA"
                                              'tracked #f)
                                            cur-flds))))))
                       ((and bm-var (not (string=? bm-var "")))
@@ -736,12 +826,17 @@
 
 ;; ── Code Generator ───────────────────────────────────────────────────────────
 
-(def (generate-dissector proto fields-by-var dissect-fields tables tfs-defs bitmask-arrays rfc description)
+(def (generate-dissector proto fields-by-var dissect-fields tables tfs-defs bitmask-arrays rfc description copyright)
   "Build the complete .ss file as a string."
   (let* ((proto-kebab (re-replace-all "_" proto "-"))
          (lines       '()))
 
     (def (emit! s) (set! lines (cons s lines)))
+
+    ;; Copyright block (verbatim from C source, converted to ;; comments)
+    (when (and copyright (not (string=? copyright "")))
+      (emit! copyright)
+      (emit! ""))
 
     ;; Header
     (emit! (str ";; jerboa-ethereal/dissectors/" proto-kebab ".ss"))
@@ -841,45 +936,51 @@
             (emit! (str "    ;; TODO: no extractable fields found for " proto-kebab))
             (emit! "    (ok '())"))
           (begin
-            ;; Emit let* bindings
+            ;; Emit let* bindings — use sequential running offset for var/tracked fields
             (emit! "    (let* (")
-            (for ((df readable))
-              (let* ((field    (hash-get fields-by-var (dissect-field-hf-var df)))
-                     (name     (hf-field-short-name field))
-                     (ft       (hf-field-ft-type field))
-                     (kind     (dissect-field-kind df))
-                     (offset   (dissect-field-offset df))
-                     (size     (dissect-field-size df))
-                     (enc      (dissect-field-encoding df))
-                     (reader   (let ((r (hf-field-reader field)))
-                                 (if (and (not (eq? kind 'bitmask-bit))
-                                          (string-contains enc "LITTLE_ENDIAN"))
-                                     (or (hash-get ft-le-override ft) r)
-                                     r))))
-                (cond
-                  ;; Bitmask bit: extract from parent field value
-                  ((eq? kind 'bitmask-bit)
-                   (let* ((parent-field (hash-get fields-by-var (dissect-field-parent-name df)))
-                          (parent-name  (and parent-field (hf-field-short-name parent-field)))
-                          (mask-str     (hf-field-bitmask-str field))
-                          (mask-val     (parse-c-number mask-str))
-                          (shift        (lowest-bit-pos mask-val)))
-                     (if parent-name
-                         (emit! (str "           (" name
-                                     " (extract-bits " parent-name
-                                     " " (fmt-hex mask-val)
-                                     " " shift "))"))
-                         (emit! (str "           (" name " 0) ;; bitmask parent not found")))))
-                  ;; Byte slice (read-bytes → slice)
-                  ((string=? reader "read-bytes")
-                   (let* ((actual-size (if (> size 0) size
-                                          (or (hash-get ft->size ft) 1)))
-                          (off (or offset 0)))
-                     (emit! (str "           (" name " (unwrap (slice buffer " off " " actual-size ")))"))))
-                  ;; Numeric read
-                  (else
-                   (let ((off (or offset 0)))
-                     (emit! (str "           (" name " (unwrap (" reader " buffer " off ")))")))))))  
+            (let ((running-off 0))  ;; sequential offset counter for variable-offset fields
+              (for ((df readable))
+                (let* ((field    (hash-get fields-by-var (dissect-field-hf-var df)))
+                       (name     (hf-field-short-name field))
+                       (ft       (hf-field-ft-type field))
+                       (kind     (dissect-field-kind df))
+                       (offset   (dissect-field-offset df))
+                       (size     (dissect-field-size df))
+                       (enc      (dissect-field-encoding df))
+                       (reader   (let ((r (hf-field-reader field)))
+                                   (if (and (not (eq? kind 'bitmask-bit))
+                                            (string-contains enc "LITTLE_ENDIAN"))
+                                       (or (hash-get ft-le-override ft) r)
+                                       r))))
+                  (cond
+                    ;; Bitmask bit: extract from parent field value (no offset advancement)
+                    ((eq? kind 'bitmask-bit)
+                     (let* ((parent-field (hash-get fields-by-var (dissect-field-parent-name df)))
+                            (parent-name  (and parent-field (hf-field-short-name parent-field)))
+                            (mask-str     (hf-field-bitmask-str field))
+                            (mask-val     (parse-c-number mask-str))
+                            (shift        (lowest-bit-pos mask-val)))
+                       (if parent-name
+                           (emit! (str "           (" name
+                                       " (extract-bits " parent-name
+                                       " " (fmt-hex mask-val)
+                                       " " shift "))"))
+                           (emit! (str "           (" name " 0) ;; bitmask parent not found")))))
+                    ;; Byte slice (read-bytes → slice)
+                    ((string=? reader "read-bytes")
+                     (let* ((actual-size (if (> size 0) size (or (hash-get ft->size ft) 1)))
+                            ;; Use literal offset if known, else sequential running offset
+                            (use-off (or offset running-off)))
+                       (emit! (str "           (" name " (unwrap (slice buffer " use-off " " actual-size ")))"))
+                       ;; Advance running-off past this field
+                       (set! running-off (max running-off (+ use-off actual-size)))))
+                    ;; Numeric read
+                    (else
+                     (let* ((field-size (or (hash-get ft->size ft) (if (> size 0) size 1)))
+                            (use-off    (or offset running-off)))
+                       (emit! (str "           (" name " (unwrap (" reader " buffer " use-off ")))"))
+                       ;; Advance running-off past this field
+                       (set! running-off (max running-off (+ use-off field-size)))))))))
             (emit! "           )")
             (emit! "")
 
@@ -926,6 +1027,7 @@
   (let* ((src            (read-file-string c-path))
          (proto          (proto-from-filename c-path))
          (proto-kebab    (re-replace-all "_" proto "-"))
+         (copyright      (extract-copyright src))
          (fields         (parse-hf-register-info src))
          (tables         (parse-value-tables src))
          (tfs-defs       (parse-tfs-defs src))
@@ -935,23 +1037,33 @@
                                 fields)))
          (rfc            (find-rfc src))
          (description    (find-description src)))
-    ;; Find primary dissect function
+    ;; Find primary dissect function; fall back to whole-file scan if it has no add_* calls
     (let-values (((fn-name body) (find-dissect-fn src proto)))
-      (let* ((dissect-flds   (if fn-name
-                                 (parse-body body proto bitmask-arrs)
-                                 '()))
+      (let* (;; Decide what to parse:
+             ;; - If primary function covers >= 50% of file's add_* calls, use body only
+             ;;   (tighter offset tracking, avoids noise from sub-functions)
+             ;; - Otherwise scan the whole file to catch sub-functions (e.g. zebra, bgp)
+             (whole-file-calls (count-add-items src))
+             (body-calls       (if fn-name (count-add-items body) 0))
+             (parse-src        (if (and fn-name
+                                        (> body-calls 0)
+                                        (>= body-calls (quotient whole-file-calls 2)))
+                                   body
+                                   src))
+             (dissect-flds (parse-body parse-src proto bitmask-arrs))
              (field-count    (length fields))
              (detected-count (length dissect-flds))
              (code           (generate-dissector proto fields-by-var dissect-flds
                                                  tables tfs-defs bitmask-arrs
-                                                 rfc description))
+                                                 rfc description copyright))
              (out-path       (and out-dir
                                   (path-join out-dir (str proto-kebab ".ss")))))
         (when verbose?
           (displayln (str "  " proto-kebab
                           "  hf:" field-count
                           "  fields:" detected-count
-                          (if fn-name (str "  fn:" fn-name) "  fn:none"))))
+                          (if fn-name (str "  fn:" fn-name) "  fn:none")
+                          (if (eq? parse-src src) "  [whole-file]" ""))))
         (if out-path
             (begin
               (write-file-string out-path code)
@@ -961,14 +1073,17 @@
 ;; ── Main ─────────────────────────────────────────────────────────────────────
 
 (def (collect-c-files path)
-  "Return list of .c files to process. Path may be a file or directory."
+  "Return list of packet-*.c files to process. Path may be a single .c file or directory."
   (cond
     ((and (file-exists? path) (not (file-directory? path)))
      (list path))
     ((file-directory? path)
      (let* ((entries (directory-list path))
-            (c-files (filter (lambda (f) (string-suffix? ".c" f)) entries)))
-       (map (lambda (f) (path-join path f)) c-files)))
+            (c-files (filter (lambda (f)
+                               (and (string-suffix? ".c" f)
+                                    (string-prefix? "packet-" f)))
+                             entries)))
+       (sort (map (lambda (f) (path-join path f)) c-files) string<?)))
     (else '())))
 
 (def (parse-args args)
@@ -1000,7 +1115,10 @@
           (displayln "  scheme --libdirs .:../jerboa/lib --script tools/wireshark-convert.ss \\")
           (displayln "    ~/mine/wireshark/epan/dissectors/ --out dissectors/ --verbose"))
         (begin
+          ;; Ensure output directory exists
           (when out-dir
+            (unless (file-directory? out-dir)
+              (system (str "mkdir -p " out-dir)))
             (displayln (str "Output: " out-dir "  Files: " (length files))))
           (let ((ok-count 0) (fail-count 0) (total (length files)))
             (for ((f files))

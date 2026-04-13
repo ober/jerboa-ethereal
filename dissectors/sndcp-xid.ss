@@ -1,0 +1,230 @@
+;; packet-sndcp-xid.c
+;; Routines for Subnetwork Dependent Convergence Protocol (SNDCP) XID dissection
+;; Used to dissect XID compression parameters negotiated in GSM (TS44.065)
+;; Copyright 2008, Vincent Helfre <vincent.helfre [AT] ericsson.com>
+;;
+;; Wireshark - Network traffic analyzer
+;; By Gerald Combs <gerald@wireshark.org>
+;; Copyright 1998 Gerald Combs
+;;
+;; SPDX-License-Identifier: GPL-2.0-or-later
+;;
+
+;; jerboa-ethereal/dissectors/sndcp-xid.ss
+;; Auto-generated from wireshark/epan/dissectors/packet-sndcp_xid.c
+;; RFC 1144
+
+(import (jerboa prelude))
+
+;; ── Protocol Helpers ─────────────────────────────────────────────────
+(def (read-u8 buf offset)
+  (if (>= offset (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u8-ref buf offset))))
+
+(def (read-u16be buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness big)))))
+
+(def (read-u24be buf offset)
+  (if (> (+ offset 3) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (+ (* (bytevector-u8-ref buf offset) 65536)
+             (* (bytevector-u8-ref buf (+ offset 1)) 256)
+             (bytevector-u8-ref buf (+ offset 2))))))
+
+(def (read-u32be buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness big)))))
+
+(def (read-u16le buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness little)))))
+
+(def (read-u32le buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness little)))))
+
+(def (read-u64be buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness big)))))
+
+(def (read-u64le buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness little)))))
+
+(def (slice buf offset len)
+  (if (> (+ offset len) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (let ((result (make-bytevector len)))
+            (bytevector-copy! buf offset result 0 len)
+            result))))
+
+(def (extract-bits val mask shift)
+  (bitwise-arithmetic-shift-right (bitwise-and val mask) shift))
+
+(def (fmt-ipv4 addr)
+  (let ((b0 (bitwise-arithmetic-shift-right addr 24))
+        (b1 (bitwise-and (bitwise-arithmetic-shift-right addr 16) 255))
+        (b2 (bitwise-and (bitwise-arithmetic-shift-right addr 8) 255))
+        (b3 (bitwise-and addr 255)))
+    (str b0 "." b1 "." b2 "." b3)))
+
+(def (fmt-mac bytes)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bytes))
+    ":"))
+
+(def (fmt-hex val)
+  (str "0x" (number->string val 16)))
+
+(def (fmt-oct val)
+  (str "0" (number->string val 8)))
+
+(def (fmt-port port)
+  (number->string port))
+
+(def (fmt-bytes bv)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bv))
+    " "))
+
+(def (fmt-ipv6-address bytes)
+  (let loop ((i 0) (parts '()))
+    (if (>= i 16)
+        (string-join (reverse parts) ":")
+        (loop (+ i 2)
+              (cons (let ((w (+ (* (bytevector-u8-ref bytes i) 256)
+                                (bytevector-u8-ref bytes (+ i 1)))))
+                      (number->string w 16))
+                    parts)))))
+
+;; ── Dissector ──────────────────────────────────────────────────────
+(def (dissect-sndcp-xid buffer)
+  "Subnetwork Dependent Convergence Protocol XID"
+  (try
+    (let* (
+           (applicable-nsapi-14 (unwrap (read-u8 buffer 0)))
+           (applicable-nsapi-13 (unwrap (read-u8 buffer 0)))
+           (applicable-nsapi-12 (unwrap (read-u8 buffer 0)))
+           (applicable-nsapi-11 (unwrap (read-u8 buffer 0)))
+           (applicable-nsapi-10 (unwrap (read-u8 buffer 0)))
+           (applicable-nsapi-9 (unwrap (read-u8 buffer 0)))
+           (applicable-nsapi-8 (unwrap (read-u8 buffer 0)))
+           (applicable-nsapi-7 (unwrap (read-u8 buffer 0)))
+           (applicable-nsapi-6 (unwrap (read-u8 buffer 0)))
+           (applicable-nsapi-5 (unwrap (read-u8 buffer 0)))
+           (applicable-nsapi-spare (unwrap (read-u8 buffer 0)))
+           (xid-rfc1144-s0 (unwrap (read-u8 buffer 0)))
+           (xid-rfc2507-f-max-period-msb (unwrap (read-u8 buffer 0)))
+           (xid-rfc2507-f-max-period-lsb (unwrap (read-u8 buffer 0)))
+           (xid-rfc2507-f-max-time (unwrap (read-u8 buffer 0)))
+           (xid-rfc2507-max-header (unwrap (read-u8 buffer 0)))
+           (xid-rfc2507-tcp-space (unwrap (read-u8 buffer 0)))
+           (xid-rfc2507-non-tcp-space-msb (unwrap (read-u8 buffer 0)))
+           (xid-rfc2507-non-tcp-space-lsb (unwrap (read-u8 buffer 0)))
+           (xid-rohc-max-cid-spare (unwrap (read-u8 buffer 0)))
+           (xid-rohc-max-cid-msb (unwrap (read-u8 buffer 0)))
+           (xid-rohc-max-cid-lsb (unwrap (read-u8 buffer 0)))
+           (xid-rohc-max-header (unwrap (read-u8 buffer 0)))
+           (xid-rohc-profile-msb (unwrap (read-u8 buffer 0)))
+           (xid-rohc-profile-lsb (unwrap (read-u8 buffer 0)))
+           (xid-V42bis-p0-spare (unwrap (read-u8 buffer 0)))
+           (xid-V42bis-p0 (unwrap (read-u8 buffer 0)))
+           (xid-V42bis-p1-msb (unwrap (read-u8 buffer 0)))
+           (xid-V42bis-p1-lsb (unwrap (read-u8 buffer 0)))
+           (xid-V42bis-p2 (unwrap (read-u8 buffer 0)))
+           (xid-V44-c0-spare (unwrap (read-u8 buffer 0)))
+           (xid-V44-c0 (unwrap (read-u8 buffer 0)))
+           (xid-V44-p0-spare (unwrap (read-u8 buffer 0)))
+           (xid-V44-p0 (unwrap (read-u8 buffer 0)))
+           (xid-V44-p1t-msb (unwrap (read-u8 buffer 0)))
+           (xid-V44-p1t-lsb (unwrap (read-u8 buffer 0)))
+           (xid-V44-p1r-msb (unwrap (read-u8 buffer 0)))
+           (xid-V44-p1r-lsb (unwrap (read-u8 buffer 0)))
+           (xid-V44-p3t-msb (unwrap (read-u8 buffer 0)))
+           (xid-V44-p3t-lsb (unwrap (read-u8 buffer 0)))
+           (xid-V44-p3r-msb (unwrap (read-u8 buffer 0)))
+           (xid-V44-p3r-lsb (unwrap (read-u8 buffer 0)))
+           (xid-value (unwrap (read-u8 buffer 0)))
+           (xid-comp-spare-byte2 (unwrap (read-u8 buffer 0)))
+           (xid-comp-algo-id (unwrap (read-u8 buffer 0)))
+           (xid-comp-spare (unwrap (read-u8 buffer 3)))
+           (xid-comp-pbit (unwrap (read-u8 buffer 3)))
+           (xid-comp-spare-byte1 (unwrap (read-u8 buffer 3)))
+           (xid-comp-entity (unwrap (read-u8 buffer 3)))
+           (xid-comp-len (unwrap (read-u8 buffer 3)))
+           (xid-type (unwrap (read-u8 buffer 5)))
+           (xid-len (unwrap (read-u8 buffer 5)))
+           (applicable-nsapi-15 (unwrap (read-u8 buffer 6)))
+           )
+
+      (ok (list
+        (cons 'applicable-nsapi-14 (list (cons 'raw applicable-nsapi-14) (cons 'formatted (number->string applicable-nsapi-14))))
+        (cons 'applicable-nsapi-13 (list (cons 'raw applicable-nsapi-13) (cons 'formatted (number->string applicable-nsapi-13))))
+        (cons 'applicable-nsapi-12 (list (cons 'raw applicable-nsapi-12) (cons 'formatted (number->string applicable-nsapi-12))))
+        (cons 'applicable-nsapi-11 (list (cons 'raw applicable-nsapi-11) (cons 'formatted (number->string applicable-nsapi-11))))
+        (cons 'applicable-nsapi-10 (list (cons 'raw applicable-nsapi-10) (cons 'formatted (number->string applicable-nsapi-10))))
+        (cons 'applicable-nsapi-9 (list (cons 'raw applicable-nsapi-9) (cons 'formatted (number->string applicable-nsapi-9))))
+        (cons 'applicable-nsapi-8 (list (cons 'raw applicable-nsapi-8) (cons 'formatted (number->string applicable-nsapi-8))))
+        (cons 'applicable-nsapi-7 (list (cons 'raw applicable-nsapi-7) (cons 'formatted (number->string applicable-nsapi-7))))
+        (cons 'applicable-nsapi-6 (list (cons 'raw applicable-nsapi-6) (cons 'formatted (number->string applicable-nsapi-6))))
+        (cons 'applicable-nsapi-5 (list (cons 'raw applicable-nsapi-5) (cons 'formatted (number->string applicable-nsapi-5))))
+        (cons 'applicable-nsapi-spare (list (cons 'raw applicable-nsapi-spare) (cons 'formatted (number->string applicable-nsapi-spare))))
+        (cons 'xid-rfc1144-s0 (list (cons 'raw xid-rfc1144-s0) (cons 'formatted (number->string xid-rfc1144-s0))))
+        (cons 'xid-rfc2507-f-max-period-msb (list (cons 'raw xid-rfc2507-f-max-period-msb) (cons 'formatted (fmt-hex xid-rfc2507-f-max-period-msb))))
+        (cons 'xid-rfc2507-f-max-period-lsb (list (cons 'raw xid-rfc2507-f-max-period-lsb) (cons 'formatted (fmt-hex xid-rfc2507-f-max-period-lsb))))
+        (cons 'xid-rfc2507-f-max-time (list (cons 'raw xid-rfc2507-f-max-time) (cons 'formatted (number->string xid-rfc2507-f-max-time))))
+        (cons 'xid-rfc2507-max-header (list (cons 'raw xid-rfc2507-max-header) (cons 'formatted (number->string xid-rfc2507-max-header))))
+        (cons 'xid-rfc2507-tcp-space (list (cons 'raw xid-rfc2507-tcp-space) (cons 'formatted (number->string xid-rfc2507-tcp-space))))
+        (cons 'xid-rfc2507-non-tcp-space-msb (list (cons 'raw xid-rfc2507-non-tcp-space-msb) (cons 'formatted (fmt-hex xid-rfc2507-non-tcp-space-msb))))
+        (cons 'xid-rfc2507-non-tcp-space-lsb (list (cons 'raw xid-rfc2507-non-tcp-space-lsb) (cons 'formatted (fmt-hex xid-rfc2507-non-tcp-space-lsb))))
+        (cons 'xid-rohc-max-cid-spare (list (cons 'raw xid-rohc-max-cid-spare) (cons 'formatted (number->string xid-rohc-max-cid-spare))))
+        (cons 'xid-rohc-max-cid-msb (list (cons 'raw xid-rohc-max-cid-msb) (cons 'formatted (fmt-hex xid-rohc-max-cid-msb))))
+        (cons 'xid-rohc-max-cid-lsb (list (cons 'raw xid-rohc-max-cid-lsb) (cons 'formatted (fmt-hex xid-rohc-max-cid-lsb))))
+        (cons 'xid-rohc-max-header (list (cons 'raw xid-rohc-max-header) (cons 'formatted (number->string xid-rohc-max-header))))
+        (cons 'xid-rohc-profile-msb (list (cons 'raw xid-rohc-profile-msb) (cons 'formatted (fmt-hex xid-rohc-profile-msb))))
+        (cons 'xid-rohc-profile-lsb (list (cons 'raw xid-rohc-profile-lsb) (cons 'formatted (fmt-hex xid-rohc-profile-lsb))))
+        (cons 'xid-V42bis-p0-spare (list (cons 'raw xid-V42bis-p0-spare) (cons 'formatted (number->string xid-V42bis-p0-spare))))
+        (cons 'xid-V42bis-p0 (list (cons 'raw xid-V42bis-p0) (cons 'formatted (fmt-hex xid-V42bis-p0))))
+        (cons 'xid-V42bis-p1-msb (list (cons 'raw xid-V42bis-p1-msb) (cons 'formatted (fmt-hex xid-V42bis-p1-msb))))
+        (cons 'xid-V42bis-p1-lsb (list (cons 'raw xid-V42bis-p1-lsb) (cons 'formatted (fmt-hex xid-V42bis-p1-lsb))))
+        (cons 'xid-V42bis-p2 (list (cons 'raw xid-V42bis-p2) (cons 'formatted (fmt-hex xid-V42bis-p2))))
+        (cons 'xid-V44-c0-spare (list (cons 'raw xid-V44-c0-spare) (cons 'formatted (fmt-hex xid-V44-c0-spare))))
+        (cons 'xid-V44-c0 (list (cons 'raw xid-V44-c0) (cons 'formatted (fmt-hex xid-V44-c0))))
+        (cons 'xid-V44-p0-spare (list (cons 'raw xid-V44-p0-spare) (cons 'formatted (number->string xid-V44-p0-spare))))
+        (cons 'xid-V44-p0 (list (cons 'raw xid-V44-p0) (cons 'formatted (fmt-hex xid-V44-p0))))
+        (cons 'xid-V44-p1t-msb (list (cons 'raw xid-V44-p1t-msb) (cons 'formatted (fmt-hex xid-V44-p1t-msb))))
+        (cons 'xid-V44-p1t-lsb (list (cons 'raw xid-V44-p1t-lsb) (cons 'formatted (fmt-hex xid-V44-p1t-lsb))))
+        (cons 'xid-V44-p1r-msb (list (cons 'raw xid-V44-p1r-msb) (cons 'formatted (fmt-hex xid-V44-p1r-msb))))
+        (cons 'xid-V44-p1r-lsb (list (cons 'raw xid-V44-p1r-lsb) (cons 'formatted (fmt-hex xid-V44-p1r-lsb))))
+        (cons 'xid-V44-p3t-msb (list (cons 'raw xid-V44-p3t-msb) (cons 'formatted (fmt-hex xid-V44-p3t-msb))))
+        (cons 'xid-V44-p3t-lsb (list (cons 'raw xid-V44-p3t-lsb) (cons 'formatted (fmt-hex xid-V44-p3t-lsb))))
+        (cons 'xid-V44-p3r-msb (list (cons 'raw xid-V44-p3r-msb) (cons 'formatted (fmt-hex xid-V44-p3r-msb))))
+        (cons 'xid-V44-p3r-lsb (list (cons 'raw xid-V44-p3r-lsb) (cons 'formatted (fmt-hex xid-V44-p3r-lsb))))
+        (cons 'xid-value (list (cons 'raw xid-value) (cons 'formatted (number->string xid-value))))
+        (cons 'xid-comp-spare-byte2 (list (cons 'raw xid-comp-spare-byte2) (cons 'formatted (fmt-hex xid-comp-spare-byte2))))
+        (cons 'xid-comp-algo-id (list (cons 'raw xid-comp-algo-id) (cons 'formatted (number->string xid-comp-algo-id))))
+        (cons 'xid-comp-spare (list (cons 'raw xid-comp-spare) (cons 'formatted (fmt-hex xid-comp-spare))))
+        (cons 'xid-comp-pbit (list (cons 'raw xid-comp-pbit) (cons 'formatted (number->string xid-comp-pbit))))
+        (cons 'xid-comp-spare-byte1 (list (cons 'raw xid-comp-spare-byte1) (cons 'formatted (fmt-hex xid-comp-spare-byte1))))
+        (cons 'xid-comp-entity (list (cons 'raw xid-comp-entity) (cons 'formatted (number->string xid-comp-entity))))
+        (cons 'xid-comp-len (list (cons 'raw xid-comp-len) (cons 'formatted (number->string xid-comp-len))))
+        (cons 'xid-type (list (cons 'raw xid-type) (cons 'formatted (number->string xid-type))))
+        (cons 'xid-len (list (cons 'raw xid-len) (cons 'formatted (number->string xid-len))))
+        (cons 'applicable-nsapi-15 (list (cons 'raw applicable-nsapi-15) (cons 'formatted (number->string applicable-nsapi-15))))
+        )))
+
+    (catch (e)
+      (err (str "SNDCP-XID parse error: " e)))))
+
+;; dissect-sndcp-xid: parse SNDCP-XID from bytevector
+;; Returns (ok fields-alist) or (err message)

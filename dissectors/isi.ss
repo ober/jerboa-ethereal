@@ -1,0 +1,233 @@
+;; packet-isi.c
+;; Dissector for Nokia's Intelligent Service Interface protocol
+;; Copyright 2010, Sebastian Reichel <sre@ring0.de>
+;; Copyright 2010, Tyson Key <tyson.key@gmail.com>
+;;
+;; Wireshark - Network traffic analyzer
+;; By Gerald Combs <gerald@wireshark.org>
+;; Copyright 1998 Gerald Combs
+;;
+;; SPDX-License-Identifier: GPL-2.0-or-later
+;;
+
+;; jerboa-ethereal/dissectors/isi.ss
+;; Auto-generated from wireshark/epan/dissectors/packet-isi.c
+
+(import (jerboa prelude))
+
+;; ── Protocol Helpers ─────────────────────────────────────────────────
+(def (read-u8 buf offset)
+  (if (>= offset (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u8-ref buf offset))))
+
+(def (read-u16be buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness big)))))
+
+(def (read-u24be buf offset)
+  (if (> (+ offset 3) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (+ (* (bytevector-u8-ref buf offset) 65536)
+             (* (bytevector-u8-ref buf (+ offset 1)) 256)
+             (bytevector-u8-ref buf (+ offset 2))))))
+
+(def (read-u32be buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness big)))))
+
+(def (read-u16le buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness little)))))
+
+(def (read-u32le buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness little)))))
+
+(def (read-u64be buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness big)))))
+
+(def (read-u64le buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness little)))))
+
+(def (slice buf offset len)
+  (if (> (+ offset len) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (let ((result (make-bytevector len)))
+            (bytevector-copy! buf offset result 0 len)
+            result))))
+
+(def (extract-bits val mask shift)
+  (bitwise-arithmetic-shift-right (bitwise-and val mask) shift))
+
+(def (fmt-ipv4 addr)
+  (let ((b0 (bitwise-arithmetic-shift-right addr 24))
+        (b1 (bitwise-and (bitwise-arithmetic-shift-right addr 16) 255))
+        (b2 (bitwise-and (bitwise-arithmetic-shift-right addr 8) 255))
+        (b3 (bitwise-and addr 255)))
+    (str b0 "." b1 "." b2 "." b3)))
+
+(def (fmt-mac bytes)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bytes))
+    ":"))
+
+(def (fmt-hex val)
+  (str "0x" (number->string val 16)))
+
+(def (fmt-oct val)
+  (str "0" (number->string val 8)))
+
+(def (fmt-port port)
+  (number->string port))
+
+(def (fmt-bytes bv)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bv))
+    " "))
+
+(def (fmt-ipv6-address bytes)
+  (let loop ((i 0) (parts '()))
+    (if (>= i 16)
+        (string-join (reverse parts) ":")
+        (loop (+ i 2)
+              (cons (let ((w (+ (* (bytevector-u8-ref bytes i) 256)
+                                (bytevector-u8-ref bytes (+ i 1)))))
+                      (number->string w 16))
+                    parts)))))
+
+;; ── Dissector ──────────────────────────────────────────────────────
+(def (dissect-isi buffer)
+  "Intelligent Service Interface"
+  (try
+    (let* (
+           (sms-payload (unwrap (slice buffer 0 1)))
+           (network-payload (unwrap (slice buffer 0 1)))
+           (ss-payload (unwrap (slice buffer 0 1)))
+           (gps-payload (unwrap (slice buffer 0 1)))
+           (gss-payload (unwrap (slice buffer 0 1)))
+           (sim-payload (unwrap (slice buffer 0 1)))
+           (sim-auth-payload (unwrap (slice buffer 0 1)))
+           (gps-sub-len (unwrap (read-u8 buffer 0)))
+           (network-status-sub-len (unwrap (read-u8 buffer 0)))
+           (network-cell-info-sub-len (unwrap (read-u8 buffer 0)))
+           (sim-auth-protection-rsp (unwrap (read-u8 buffer 1)))
+           (sms-subblock-count (unwrap (read-u8 buffer 2)))
+           (ss-subblock-count (unwrap (read-u8 buffer 2)))
+           (gss-subblock-count (unwrap (read-u8 buffer 2)))
+           (sim-subblock-count (unwrap (read-u16be buffer 2)))
+           (sim-auth-puk (unwrap (slice buffer 2 11)))
+           (network-status-sub-lac (unwrap (read-u16be buffer 2)))
+           (network-status-sub-cid (unwrap (read-u32be buffer 2)))
+           (network-status-sub-msg-len (unwrap (read-u16be buffer 2)))
+           (network-status-sub-msg (unwrap (slice buffer 2 1)))
+           (network-cell-info-sub-operator (unwrap (read-u24be buffer 2)))
+           (len (unwrap (read-u16be buffer 3)))
+           (ss-ussd-length (unwrap (read-u8 buffer 3)))
+           (sim-imsi-length (unwrap (read-u8 buffer 3)))
+           (sim-auth-pin (unwrap (slice buffer 3 1)))
+           (gps-latitude (unwrap (read-u64be buffer 4)))
+           (gps-longitude (unwrap (read-u64be buffer 4)))
+           (gps-eph (unwrap (read-u32be buffer 4)))
+           (gps-altitude (unwrap (read-u16be buffer 4)))
+           (gps-epv (unwrap (read-u32be buffer 4)))
+           (gps-year (unwrap (read-u16be buffer 4)))
+           (gps-month (unwrap (read-u8 buffer 4)))
+           (gps-day (unwrap (read-u8 buffer 4)))
+           (gps-hour (unwrap (read-u8 buffer 4)))
+           (gps-minute (unwrap (read-u8 buffer 4)))
+           (gps-second (unwrap (read-u32be buffer 4)))
+           (gps-course (unwrap (read-u32be buffer 4)))
+           (gps-epd (unwrap (read-u32be buffer 4)))
+           (gps-speed (unwrap (read-u32be buffer 4)))
+           (gps-eps (unwrap (read-u32be buffer 4)))
+           (gps-climb (unwrap (read-u32be buffer 4)))
+           (gps-epc (unwrap (read-u32be buffer 4)))
+           (gps-satellites (unwrap (read-u8 buffer 4)))
+           (gps-mcc (unwrap (read-u16be buffer 4)))
+           (gps-mnc (unwrap (read-u16be buffer 4)))
+           (gps-lac (unwrap (read-u16be buffer 4)))
+           (gps-cid (unwrap (read-u16be buffer 4)))
+           (gps-ucid (unwrap (read-u32be buffer 4)))
+           (robj (unwrap (read-u8 buffer 5)))
+           (sobj (unwrap (read-u8 buffer 6)))
+           (sim-subblock-size (unwrap (read-u16be buffer 6)))
+           (id (unwrap (read-u8 buffer 7)))
+           (sim-pb-location (unwrap (read-u16be buffer 9)))
+           (sim-auth-new-pin (unwrap (slice buffer 13 11)))
+           (sim-pb-tag-count (unwrap (read-u8 buffer 15)))
+           )
+
+      (ok (list
+        (cons 'sms-payload (list (cons 'raw sms-payload) (cons 'formatted (fmt-bytes sms-payload))))
+        (cons 'network-payload (list (cons 'raw network-payload) (cons 'formatted (fmt-bytes network-payload))))
+        (cons 'ss-payload (list (cons 'raw ss-payload) (cons 'formatted (fmt-bytes ss-payload))))
+        (cons 'gps-payload (list (cons 'raw gps-payload) (cons 'formatted (fmt-bytes gps-payload))))
+        (cons 'gss-payload (list (cons 'raw gss-payload) (cons 'formatted (fmt-bytes gss-payload))))
+        (cons 'sim-payload (list (cons 'raw sim-payload) (cons 'formatted (fmt-bytes sim-payload))))
+        (cons 'sim-auth-payload (list (cons 'raw sim-auth-payload) (cons 'formatted (fmt-bytes sim-auth-payload))))
+        (cons 'gps-sub-len (list (cons 'raw gps-sub-len) (cons 'formatted (number->string gps-sub-len))))
+        (cons 'network-status-sub-len (list (cons 'raw network-status-sub-len) (cons 'formatted (number->string network-status-sub-len))))
+        (cons 'network-cell-info-sub-len (list (cons 'raw network-cell-info-sub-len) (cons 'formatted (number->string network-cell-info-sub-len))))
+        (cons 'sim-auth-protection-rsp (list (cons 'raw sim-auth-protection-rsp) (cons 'formatted (number->string sim-auth-protection-rsp))))
+        (cons 'sms-subblock-count (list (cons 'raw sms-subblock-count) (cons 'formatted (number->string sms-subblock-count))))
+        (cons 'ss-subblock-count (list (cons 'raw ss-subblock-count) (cons 'formatted (number->string ss-subblock-count))))
+        (cons 'gss-subblock-count (list (cons 'raw gss-subblock-count) (cons 'formatted (number->string gss-subblock-count))))
+        (cons 'sim-subblock-count (list (cons 'raw sim-subblock-count) (cons 'formatted (number->string sim-subblock-count))))
+        (cons 'sim-auth-puk (list (cons 'raw sim-auth-puk) (cons 'formatted (utf8->string sim-auth-puk))))
+        (cons 'network-status-sub-lac (list (cons 'raw network-status-sub-lac) (cons 'formatted (fmt-hex network-status-sub-lac))))
+        (cons 'network-status-sub-cid (list (cons 'raw network-status-sub-cid) (cons 'formatted (fmt-hex network-status-sub-cid))))
+        (cons 'network-status-sub-msg-len (list (cons 'raw network-status-sub-msg-len) (cons 'formatted (number->string network-status-sub-msg-len))))
+        (cons 'network-status-sub-msg (list (cons 'raw network-status-sub-msg) (cons 'formatted (utf8->string network-status-sub-msg))))
+        (cons 'network-cell-info-sub-operator (list (cons 'raw network-cell-info-sub-operator) (cons 'formatted (fmt-hex network-cell-info-sub-operator))))
+        (cons 'len (list (cons 'raw len) (cons 'formatted (number->string len))))
+        (cons 'ss-ussd-length (list (cons 'raw ss-ussd-length) (cons 'formatted (number->string ss-ussd-length))))
+        (cons 'sim-imsi-length (list (cons 'raw sim-imsi-length) (cons 'formatted (number->string sim-imsi-length))))
+        (cons 'sim-auth-pin (list (cons 'raw sim-auth-pin) (cons 'formatted (utf8->string sim-auth-pin))))
+        (cons 'gps-latitude (list (cons 'raw gps-latitude) (cons 'formatted (number->string gps-latitude))))
+        (cons 'gps-longitude (list (cons 'raw gps-longitude) (cons 'formatted (number->string gps-longitude))))
+        (cons 'gps-eph (list (cons 'raw gps-eph) (cons 'formatted (number->string gps-eph))))
+        (cons 'gps-altitude (list (cons 'raw gps-altitude) (cons 'formatted (number->string gps-altitude))))
+        (cons 'gps-epv (list (cons 'raw gps-epv) (cons 'formatted (number->string gps-epv))))
+        (cons 'gps-year (list (cons 'raw gps-year) (cons 'formatted (number->string gps-year))))
+        (cons 'gps-month (list (cons 'raw gps-month) (cons 'formatted (number->string gps-month))))
+        (cons 'gps-day (list (cons 'raw gps-day) (cons 'formatted (number->string gps-day))))
+        (cons 'gps-hour (list (cons 'raw gps-hour) (cons 'formatted (number->string gps-hour))))
+        (cons 'gps-minute (list (cons 'raw gps-minute) (cons 'formatted (number->string gps-minute))))
+        (cons 'gps-second (list (cons 'raw gps-second) (cons 'formatted (number->string gps-second))))
+        (cons 'gps-course (list (cons 'raw gps-course) (cons 'formatted (number->string gps-course))))
+        (cons 'gps-epd (list (cons 'raw gps-epd) (cons 'formatted (number->string gps-epd))))
+        (cons 'gps-speed (list (cons 'raw gps-speed) (cons 'formatted (number->string gps-speed))))
+        (cons 'gps-eps (list (cons 'raw gps-eps) (cons 'formatted (number->string gps-eps))))
+        (cons 'gps-climb (list (cons 'raw gps-climb) (cons 'formatted (number->string gps-climb))))
+        (cons 'gps-epc (list (cons 'raw gps-epc) (cons 'formatted (number->string gps-epc))))
+        (cons 'gps-satellites (list (cons 'raw gps-satellites) (cons 'formatted (number->string gps-satellites))))
+        (cons 'gps-mcc (list (cons 'raw gps-mcc) (cons 'formatted (fmt-hex gps-mcc))))
+        (cons 'gps-mnc (list (cons 'raw gps-mnc) (cons 'formatted (fmt-hex gps-mnc))))
+        (cons 'gps-lac (list (cons 'raw gps-lac) (cons 'formatted (fmt-hex gps-lac))))
+        (cons 'gps-cid (list (cons 'raw gps-cid) (cons 'formatted (fmt-hex gps-cid))))
+        (cons 'gps-ucid (list (cons 'raw gps-ucid) (cons 'formatted (fmt-hex gps-ucid))))
+        (cons 'robj (list (cons 'raw robj) (cons 'formatted (fmt-hex robj))))
+        (cons 'sobj (list (cons 'raw sobj) (cons 'formatted (fmt-hex sobj))))
+        (cons 'sim-subblock-size (list (cons 'raw sim-subblock-size) (cons 'formatted (number->string sim-subblock-size))))
+        (cons 'id (list (cons 'raw id) (cons 'formatted (number->string id))))
+        (cons 'sim-pb-location (list (cons 'raw sim-pb-location) (cons 'formatted (number->string sim-pb-location))))
+        (cons 'sim-auth-new-pin (list (cons 'raw sim-auth-new-pin) (cons 'formatted (utf8->string sim-auth-new-pin))))
+        (cons 'sim-pb-tag-count (list (cons 'raw sim-pb-tag-count) (cons 'formatted (number->string sim-pb-tag-count))))
+        )))
+
+    (catch (e)
+      (err (str "ISI parse error: " e)))))
+
+;; dissect-isi: parse ISI from bytevector
+;; Returns (ok fields-alist) or (err message)

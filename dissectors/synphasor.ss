@@ -1,0 +1,248 @@
+;; packet-synphasor.c
+;; Dissector for IEEE C37.118 synchrophasor frames.
+;;
+;; Copyright 2008, Jens Steinhauser <jens.steinhauser@omicron.at>
+;; Copyright 2019, Dwayne Rich <dwayne_rich@selinc.com>
+;; Copyright 2020, Dmitriy Eliseev <eliseev_d@ntcees.ru>
+;; Copyright 2024, Ivan Ugryumov <ugrumov.i@yandex.ru>
+;;
+;; Wireshark - Network traffic analyzer
+;; By Gerald Combs <gerald@wireshark.org>
+;; Copyright 1998 Gerald Combs
+;;
+;; SPDX-License-Identifier: GPL-2.0-or-later
+;;
+
+;; jerboa-ethereal/dissectors/synphasor.ss
+;; Auto-generated from wireshark/epan/dissectors/packet-synphasor.c
+
+(import (jerboa prelude))
+
+;; ── Protocol Helpers ─────────────────────────────────────────────────
+(def (read-u8 buf offset)
+  (if (>= offset (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u8-ref buf offset))))
+
+(def (read-u16be buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness big)))))
+
+(def (read-u24be buf offset)
+  (if (> (+ offset 3) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (+ (* (bytevector-u8-ref buf offset) 65536)
+             (* (bytevector-u8-ref buf (+ offset 1)) 256)
+             (bytevector-u8-ref buf (+ offset 2))))))
+
+(def (read-u32be buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness big)))))
+
+(def (read-u16le buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness little)))))
+
+(def (read-u32le buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness little)))))
+
+(def (read-u64be buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness big)))))
+
+(def (read-u64le buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness little)))))
+
+(def (slice buf offset len)
+  (if (> (+ offset len) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (let ((result (make-bytevector len)))
+            (bytevector-copy! buf offset result 0 len)
+            result))))
+
+(def (extract-bits val mask shift)
+  (bitwise-arithmetic-shift-right (bitwise-and val mask) shift))
+
+(def (fmt-ipv4 addr)
+  (let ((b0 (bitwise-arithmetic-shift-right addr 24))
+        (b1 (bitwise-and (bitwise-arithmetic-shift-right addr 16) 255))
+        (b2 (bitwise-and (bitwise-arithmetic-shift-right addr 8) 255))
+        (b3 (bitwise-and addr 255)))
+    (str b0 "." b1 "." b2 "." b3)))
+
+(def (fmt-mac bytes)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bytes))
+    ":"))
+
+(def (fmt-hex val)
+  (str "0x" (number->string val 16)))
+
+(def (fmt-oct val)
+  (str "0" (number->string val 8)))
+
+(def (fmt-port port)
+  (number->string port))
+
+(def (fmt-bytes bv)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bv))
+    " "))
+
+(def (fmt-ipv6-address bytes)
+  (let loop ((i 0) (parts '()))
+    (if (>= i 16)
+        (string-join (reverse parts) ":")
+        (loop (+ i 2)
+              (cons (let ((w (+ (* (bytevector-u8-ref bytes i) 256)
+                                (bytevector-u8-ref bytes (+ i 1)))))
+                      (number->string w 16))
+                    parts)))))
+
+;; ── Dissector ──────────────────────────────────────────────────────
+(def (dissect-synphasor buffer)
+  "IEEE C37.118 Synchrophasor Protocol"
+  (try
+    (let* (
+           (frame-num (unwrap (read-u32be buffer 0)))
+           (hf-sync (unwrap (read-u16be buffer 0)))
+           (idx (unwrap (read-u16be buffer 0)))
+           (statb13 (unwrap (read-u8 buffer 0)))
+           (statb12 (unwrap (read-u8 buffer 0)))
+           (statb11 (unwrap (read-u8 buffer 0)))
+           (statb10 (unwrap (read-u8 buffer 0)))
+           (statb09 (unwrap (read-u8 buffer 0)))
+           (unknown-data (unwrap (slice buffer 2 1)))
+           (extended-frame-data (unwrap (slice buffer 2 1)))
+           (timebase (unwrap (read-u24be buffer 3)))
+           (stream-source (unwrap (read-u16be buffer 4)))
+           (numpmu (unwrap (read-u16be buffer 6)))
+           (name (unwrap (slice buffer 9 1)))
+           (data-source (unwrap (read-u16be buffer 9)))
+           (lsdir (unwrap (read-u8 buffer 10)))
+           (lsocc (unwrap (read-u8 buffer 10)))
+           (lspend (unwrap (read-u8 buffer 10)))
+           (raw (unwrap (read-u24be buffer 11)))
+           (pmu-id (unwrap (slice buffer 11 1)))
+           (formatb3 (unwrap (read-u8 buffer 11)))
+           (formatb2 (unwrap (read-u8 buffer 11)))
+           (formatb1 (unwrap (read-u8 buffer 11)))
+           (formatb0 (unwrap (read-u8 buffer 11)))
+           (num-phasors (unwrap (read-u16be buffer 13)))
+           (num-analog-values (unwrap (read-u16be buffer 13)))
+           (num-digital-status-words (unwrap (read-u16be buffer 13)))
+           (phasor (unwrap (slice buffer 14 1)))
+           (data (unwrap (slice buffer 14 1)))
+           (pmu-lat-unknown (unwrap (read-u32be buffer 19)))
+           (frequency-deviation-from-nominal (unwrap (read-u16be buffer 22)))
+           (pmu-lon-unknown (unwrap (read-u32be buffer 23)))
+           (analog-value (unwrap (slice buffer 26 1)))
+           (pmu-elev-unknown (unwrap (read-u32be buffer 27)))
+           (svc-class (unwrap (slice buffer 31 1)))
+           (digital-status-word (unwrap (read-u16be buffer 38)))
+           (conversion-factor (unwrap (read-u32be buffer 40)))
+           (fnom (unwrap (read-u8 buffer 40)))
+           (cfgcnt (unwrap (read-u16be buffer 42)))
+           (phasor-mod-b15 (unwrap (read-u8 buffer 44)))
+           (phasor-mod-b10 (unwrap (read-u8 buffer 44)))
+           (phasor-mod-b09 (unwrap (read-u8 buffer 44)))
+           (phasor-mod-b08 (unwrap (read-u8 buffer 44)))
+           (phasor-mod-b07 (unwrap (read-u8 buffer 44)))
+           (phasor-mod-b06 (unwrap (read-u8 buffer 44)))
+           (phasor-mod-b05 (unwrap (read-u8 buffer 44)))
+           (phasor-mod-b04 (unwrap (read-u8 buffer 44)))
+           (phasor-mod-b03 (unwrap (read-u8 buffer 44)))
+           (phasor-mod-b02 (unwrap (read-u8 buffer 44)))
+           (phasor-mod-b01 (unwrap (read-u8 buffer 44)))
+           (rate-of-transmission (unwrap (read-u16be buffer 44)))
+           (phasor-type-b03 (unwrap (read-u8 buffer 46)))
+           (phasor-user-data (unwrap (read-u8 buffer 47)))
+           (phasor-scale-factor (unwrap (read-u32be buffer 48)))
+           (factor-for-analog-value (unwrap (read-u32be buffer 56)))
+           (analog-scale-factor (unwrap (read-u32be buffer 60)))
+           (analog-offset (unwrap (read-u32be buffer 64)))
+           (status-word-mask-normal-state (unwrap (read-u16be buffer 68)))
+           (status-word-mask-valid-bits (unwrap (read-u16be buffer 70)))
+           (channel-name (unwrap (slice buffer 72 1)))
+           (chnam (unwrap (slice buffer 73 1)))
+           )
+
+      (ok (list
+        (cons 'frame-num (list (cons 'raw frame-num) (cons 'formatted (number->string frame-num))))
+        (cons 'hf-sync (list (cons 'raw hf-sync) (cons 'formatted (fmt-hex hf-sync))))
+        (cons 'idx (list (cons 'raw idx) (cons 'formatted (number->string idx))))
+        (cons 'statb13 (list (cons 'raw statb13) (cons 'formatted (if (= statb13 0) "Clock is synchronized" "Synchronization lost"))))
+        (cons 'statb12 (list (cons 'raw statb12) (cons 'formatted (if (= statb12 0) "By timestamp" "By arrival"))))
+        (cons 'statb11 (list (cons 'raw statb11) (cons 'formatted (if (= statb11 0) "No trigger" "Trigger detected"))))
+        (cons 'statb10 (list (cons 'raw statb10) (cons 'formatted (if (= statb10 0) "No" "Within 1 minute"))))
+        (cons 'statb09 (list (cons 'raw statb09) (cons 'formatted (if (= statb09 0) "Data not modified" "Data modified by a post-processing device"))))
+        (cons 'unknown-data (list (cons 'raw unknown-data) (cons 'formatted (fmt-bytes unknown-data))))
+        (cons 'extended-frame-data (list (cons 'raw extended-frame-data) (cons 'formatted (fmt-bytes extended-frame-data))))
+        (cons 'timebase (list (cons 'raw timebase) (cons 'formatted (number->string timebase))))
+        (cons 'stream-source (list (cons 'raw stream-source) (cons 'formatted (number->string stream-source))))
+        (cons 'numpmu (list (cons 'raw numpmu) (cons 'formatted (number->string numpmu))))
+        (cons 'name (list (cons 'raw name) (cons 'formatted (utf8->string name))))
+        (cons 'data-source (list (cons 'raw data-source) (cons 'formatted (number->string data-source))))
+        (cons 'lsdir (list (cons 'raw lsdir) (cons 'formatted (if (= lsdir 0) "Delete" "Add"))))
+        (cons 'lsocc (list (cons 'raw lsocc) (cons 'formatted (number->string lsocc))))
+        (cons 'lspend (list (cons 'raw lspend) (cons 'formatted (number->string lspend))))
+        (cons 'raw (list (cons 'raw raw) (cons 'formatted (number->string raw))))
+        (cons 'pmu-id (list (cons 'raw pmu-id) (cons 'formatted (fmt-bytes pmu-id))))
+        (cons 'formatb3 (list (cons 'raw formatb3) (cons 'formatted (if (= formatb3 0) "16-bit integer" "32-bit IEEE floating point"))))
+        (cons 'formatb2 (list (cons 'raw formatb2) (cons 'formatted (if (= formatb2 0) "16-bit integer" "32-bit IEEE floating point"))))
+        (cons 'formatb1 (list (cons 'raw formatb1) (cons 'formatted (if (= formatb1 0) "16-bit integer" "32-bit IEEE floating point"))))
+        (cons 'formatb0 (list (cons 'raw formatb0) (cons 'formatted (if (= formatb0 0) "rectangular" "polar"))))
+        (cons 'num-phasors (list (cons 'raw num-phasors) (cons 'formatted (number->string num-phasors))))
+        (cons 'num-analog-values (list (cons 'raw num-analog-values) (cons 'formatted (number->string num-analog-values))))
+        (cons 'num-digital-status-words (list (cons 'raw num-digital-status-words) (cons 'formatted (number->string num-digital-status-words))))
+        (cons 'phasor (list (cons 'raw phasor) (cons 'formatted (utf8->string phasor))))
+        (cons 'data (list (cons 'raw data) (cons 'formatted (fmt-bytes data))))
+        (cons 'pmu-lat-unknown (list (cons 'raw pmu-lat-unknown) (cons 'formatted (number->string pmu-lat-unknown))))
+        (cons 'frequency-deviation-from-nominal (list (cons 'raw frequency-deviation-from-nominal) (cons 'formatted (number->string frequency-deviation-from-nominal))))
+        (cons 'pmu-lon-unknown (list (cons 'raw pmu-lon-unknown) (cons 'formatted (number->string pmu-lon-unknown))))
+        (cons 'analog-value (list (cons 'raw analog-value) (cons 'formatted (utf8->string analog-value))))
+        (cons 'pmu-elev-unknown (list (cons 'raw pmu-elev-unknown) (cons 'formatted (number->string pmu-elev-unknown))))
+        (cons 'svc-class (list (cons 'raw svc-class) (cons 'formatted (utf8->string svc-class))))
+        (cons 'digital-status-word (list (cons 'raw digital-status-word) (cons 'formatted (fmt-hex digital-status-word))))
+        (cons 'conversion-factor (list (cons 'raw conversion-factor) (cons 'formatted (fmt-hex conversion-factor))))
+        (cons 'fnom (list (cons 'raw fnom) (cons 'formatted (if (= fnom 0) "60Hz" "50Hz"))))
+        (cons 'cfgcnt (list (cons 'raw cfgcnt) (cons 'formatted (number->string cfgcnt))))
+        (cons 'phasor-mod-b15 (list (cons 'raw phasor-mod-b15) (cons 'formatted (if (= phasor-mod-b15 0) "None" "Modification applied, type not here defined"))))
+        (cons 'phasor-mod-b10 (list (cons 'raw phasor-mod-b10) (cons 'formatted (if (= phasor-mod-b10 0) "None" "Pseudo-phasor value (combined from other phasors)"))))
+        (cons 'phasor-mod-b09 (list (cons 'raw phasor-mod-b09) (cons 'formatted (if (= phasor-mod-b09 0) "None" "Phasor phase adjusted for rotation"))))
+        (cons 'phasor-mod-b08 (list (cons 'raw phasor-mod-b08) (cons 'formatted (if (= phasor-mod-b08 0) "None" "Phasor phase adjusted for calibration"))))
+        (cons 'phasor-mod-b07 (list (cons 'raw phasor-mod-b07) (cons 'formatted (if (= phasor-mod-b07 0) "None" "Phasor magnitude adjusted for calibration"))))
+        (cons 'phasor-mod-b06 (list (cons 'raw phasor-mod-b06) (cons 'formatted (if (= phasor-mod-b06 0) "None" "Filtered without changing sampling"))))
+        (cons 'phasor-mod-b05 (list (cons 'raw phasor-mod-b05) (cons 'formatted (if (= phasor-mod-b05 0) "None" "Down sampled with non-FIR filter"))))
+        (cons 'phasor-mod-b04 (list (cons 'raw phasor-mod-b04) (cons 'formatted (if (= phasor-mod-b04 0) "None" "Down sampled with FIR filter"))))
+        (cons 'phasor-mod-b03 (list (cons 'raw phasor-mod-b03) (cons 'formatted (if (= phasor-mod-b03 0) "None" "Down sampled by reselection"))))
+        (cons 'phasor-mod-b02 (list (cons 'raw phasor-mod-b02) (cons 'formatted (if (= phasor-mod-b02 0) "None" "Up sampled with extrapolation"))))
+        (cons 'phasor-mod-b01 (list (cons 'raw phasor-mod-b01) (cons 'formatted (if (= phasor-mod-b01 0) "None" "Up sampled with interpolation"))))
+        (cons 'rate-of-transmission (list (cons 'raw rate-of-transmission) (cons 'formatted (number->string rate-of-transmission))))
+        (cons 'phasor-type-b03 (list (cons 'raw phasor-type-b03) (cons 'formatted (if (= phasor-type-b03 0) "Voltage" "Current"))))
+        (cons 'phasor-user-data (list (cons 'raw phasor-user-data) (cons 'formatted (if (= phasor-user-data 0) "No flags set" "Flags set"))))
+        (cons 'phasor-scale-factor (list (cons 'raw phasor-scale-factor) (cons 'formatted (number->string phasor-scale-factor))))
+        (cons 'factor-for-analog-value (list (cons 'raw factor-for-analog-value) (cons 'formatted (number->string factor-for-analog-value))))
+        (cons 'analog-scale-factor (list (cons 'raw analog-scale-factor) (cons 'formatted (number->string analog-scale-factor))))
+        (cons 'analog-offset (list (cons 'raw analog-offset) (cons 'formatted (number->string analog-offset))))
+        (cons 'status-word-mask-normal-state (list (cons 'raw status-word-mask-normal-state) (cons 'formatted (fmt-hex status-word-mask-normal-state))))
+        (cons 'status-word-mask-valid-bits (list (cons 'raw status-word-mask-valid-bits) (cons 'formatted (fmt-hex status-word-mask-valid-bits))))
+        (cons 'channel-name (list (cons 'raw channel-name) (cons 'formatted (utf8->string channel-name))))
+        (cons 'chnam (list (cons 'raw chnam) (cons 'formatted (utf8->string chnam))))
+        )))
+
+    (catch (e)
+      (err (str "SYNPHASOR parse error: " e)))))
+
+;; dissect-synphasor: parse SYNPHASOR from bytevector
+;; Returns (ok fields-alist) or (err message)

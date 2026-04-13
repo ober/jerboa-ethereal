@@ -1,0 +1,236 @@
+;; packet-wccp.c
+;; Routines for Web Cache C* Protocol dissection
+;; Jerry Talkington <jtalkington@users.sourceforge.net>
+;;
+;; https://datatracker.ietf.org/doc/html/draft-mclaggan-wccp-v2rev1-00
+;;
+;; Wireshark - Network traffic analyzer
+;; By Gerald Combs <gerald@wireshark.org>
+;; Copyright 1998 Gerald Combs
+;;
+;; SPDX-License-Identifier: GPL-2.0-or-later
+;;
+
+;; jerboa-ethereal/dissectors/wccp.ss
+;; Auto-generated from wireshark/epan/dissectors/packet-wccp.c
+
+(import (jerboa prelude))
+
+;; ── Protocol Helpers ─────────────────────────────────────────────────
+(def (read-u8 buf offset)
+  (if (>= offset (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u8-ref buf offset))))
+
+(def (read-u16be buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness big)))))
+
+(def (read-u24be buf offset)
+  (if (> (+ offset 3) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (+ (* (bytevector-u8-ref buf offset) 65536)
+             (* (bytevector-u8-ref buf (+ offset 1)) 256)
+             (bytevector-u8-ref buf (+ offset 2))))))
+
+(def (read-u32be buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness big)))))
+
+(def (read-u16le buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness little)))))
+
+(def (read-u32le buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness little)))))
+
+(def (read-u64be buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness big)))))
+
+(def (read-u64le buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness little)))))
+
+(def (slice buf offset len)
+  (if (> (+ offset len) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (let ((result (make-bytevector len)))
+            (bytevector-copy! buf offset result 0 len)
+            result))))
+
+(def (extract-bits val mask shift)
+  (bitwise-arithmetic-shift-right (bitwise-and val mask) shift))
+
+(def (fmt-ipv4 addr)
+  (let ((b0 (bitwise-arithmetic-shift-right addr 24))
+        (b1 (bitwise-and (bitwise-arithmetic-shift-right addr 16) 255))
+        (b2 (bitwise-and (bitwise-arithmetic-shift-right addr 8) 255))
+        (b3 (bitwise-and addr 255)))
+    (str b0 "." b1 "." b2 "." b3)))
+
+(def (fmt-mac bytes)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bytes))
+    ":"))
+
+(def (fmt-hex val)
+  (str "0x" (number->string val 16)))
+
+(def (fmt-oct val)
+  (str "0" (number->string val 8)))
+
+(def (fmt-port port)
+  (number->string port))
+
+(def (fmt-bytes bv)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bv))
+    " "))
+
+(def (fmt-ipv6-address bytes)
+  (let loop ((i 0) (parts '()))
+    (if (>= i 16)
+        (string-join (reverse parts) ":")
+        (loop (+ i 2)
+              (cons (let ((w (+ (* (bytevector-u8-ref bytes i) 256)
+                                (bytevector-u8-ref bytes (+ i 1)))))
+                      (number->string w 16))
+                    parts)))))
+
+;; ── Dissector ──────────────────────────────────────────────────────
+(def (dissect-wccp buffer)
+  "Web Cache Communication Protocol"
+  (try
+    (let* (
+           (revision (unwrap (read-u32be buffer 0)))
+           (flag (unwrap (read-u32be buffer 5)))
+           (flag-u (unwrap (read-u8 buffer 5)))
+           (bit (unwrap (read-u8 buffer 13)))
+           (info-md5-checksum (unwrap (slice buffer 17 1)))
+           (info-priority (unwrap (read-u8 buffer 17)))
+           (info-id-dynamic (unwrap (read-u8 buffer 17)))
+           (info-flags (unwrap (read-u32be buffer 21)))
+           (info-source-port (unwrap (read-u16be buffer 25)))
+           (info-destination-port (unwrap (read-u16be buffer 25)))
+           (id (unwrap (read-u32be buffer 28)))
+           (num (unwrap (read-u32be buffer 32)))
+           (identity-receive-id (unwrap (read-u32be buffer 35)))
+           (identity-received-from-num (unwrap (read-u32be buffer 35)))
+           (cache-identity-hash-rev (unwrap (read-u16be buffer 35)))
+           (cache-identity-flags (unwrap (read-u16be buffer 35)))
+           (cache-identity-flag-hash-info (extract-bits cache-identity-flags 0x1 0))
+           (cache-identity-flag-version-request (extract-bits cache-identity-flags 0x8 3))
+           (cache-identity-flag-reserved (extract-bits cache-identity-flags 0xFFF0 4))
+           (key-change-num (unwrap (read-u32be buffer 35)))
+           (view-member-change-num (unwrap (read-u32be buffer 35)))
+           (router-num (unwrap (read-u32be buffer 35)))
+           (view-wc-num (unwrap (read-u32be buffer 35)))
+           (view-info-change-num (unwrap (read-u32be buffer 35)))
+           (view-router-num (unwrap (read-u32be buffer 35)))
+           (assignment-element-change-num (unwrap (read-u32be buffer 35)))
+           (info-router-num (unwrap (read-u32be buffer 35)))
+           (buckets-assignment-wc-num (unwrap (read-u32be buffer 35)))
+           (table-address-length (unwrap (read-u16be buffer 35)))
+           (table-length (unwrap (read-u32be buffer 35)))
+           (table-element (unwrap (slice buffer 35 1)))
+           (cache-identity-index (unwrap (read-u32be buffer 35)))
+           (assignment-map-assignment-length (unwrap (read-u16be buffer 35)))
+           (weight (unwrap (read-u16be buffer 35)))
+           (status (unwrap (read-u16be buffer 35)))
+           (assignment-data-length (unwrap (read-u16be buffer 35)))
+           (element-length (unwrap (read-u16be buffer 35)))
+           (value (unwrap (slice buffer 35 1)))
+           (value-set-list-num-elements (unwrap (read-u32be buffer 35)))
+           (element-src-ip (unwrap (read-u32be buffer 35)))
+           (element-dest-ip (unwrap (read-u32be buffer 35)))
+           (assignment-mask-value-set-list-num-elements (unwrap (read-u32be buffer 35)))
+           (assignment-mask-value-set-element-num-wc-value-elements (unwrap (read-u32be buffer 35)))
+           (cache-value-element-num-values (unwrap (read-u32be buffer 35)))
+           (cache-value-seq-num (unwrap (read-u32be buffer 35)))
+           (element-src-port (unwrap (read-u16be buffer 35)))
+           (element-dest-port (unwrap (read-u16be buffer 35)))
+           (value-set-element-value-element-num (unwrap (read-u32be buffer 35)))
+           (assignment-info-assignment-length (unwrap (read-u16be buffer 35)))
+           (assignment-info-num-routers (unwrap (read-u32be buffer 35)))
+           (length (unwrap (read-u16be buffer 35)))
+           (ip (unwrap (read-u32be buffer 36)))
+           (data (unwrap (slice buffer 39 1)))
+           (hf-bucket (unwrap (read-u8 buffer 40)))
+           (header-version (unwrap (read-u16be buffer 40)))
+           (header-length (unwrap (read-u16be buffer 42)))
+           )
+
+      (ok (list
+        (cons 'revision (list (cons 'raw revision) (cons 'formatted (number->string revision))))
+        (cons 'flag (list (cons 'raw flag) (cons 'formatted (fmt-hex flag))))
+        (cons 'flag-u (list (cons 'raw flag-u) (cons 'formatted (if (= flag-u 0) "Current" "Historical"))))
+        (cons 'bit (list (cons 'raw bit) (cons 'formatted (number->string bit))))
+        (cons 'info-md5-checksum (list (cons 'raw info-md5-checksum) (cons 'formatted (fmt-bytes info-md5-checksum))))
+        (cons 'info-priority (list (cons 'raw info-priority) (cons 'formatted (number->string info-priority))))
+        (cons 'info-id-dynamic (list (cons 'raw info-id-dynamic) (cons 'formatted (number->string info-id-dynamic))))
+        (cons 'info-flags (list (cons 'raw info-flags) (cons 'formatted (fmt-hex info-flags))))
+        (cons 'info-source-port (list (cons 'raw info-source-port) (cons 'formatted (number->string info-source-port))))
+        (cons 'info-destination-port (list (cons 'raw info-destination-port) (cons 'formatted (number->string info-destination-port))))
+        (cons 'id (list (cons 'raw id) (cons 'formatted (number->string id))))
+        (cons 'num (list (cons 'raw num) (cons 'formatted (number->string num))))
+        (cons 'identity-receive-id (list (cons 'raw identity-receive-id) (cons 'formatted (number->string identity-receive-id))))
+        (cons 'identity-received-from-num (list (cons 'raw identity-received-from-num) (cons 'formatted (number->string identity-received-from-num))))
+        (cons 'cache-identity-hash-rev (list (cons 'raw cache-identity-hash-rev) (cons 'formatted (number->string cache-identity-hash-rev))))
+        (cons 'cache-identity-flags (list (cons 'raw cache-identity-flags) (cons 'formatted (fmt-hex cache-identity-flags))))
+        (cons 'cache-identity-flag-hash-info (list (cons 'raw cache-identity-flag-hash-info) (cons 'formatted (if (= cache-identity-flag-hash-info 0) "Current" "Historical"))))
+        (cons 'cache-identity-flag-version-request (list (cons 'raw cache-identity-flag-version-request) (cons 'formatted (if (= cache-identity-flag-version-request 0) "WCCP version set is minimum supported by CE" "WCCP version set is maximum supported by CE"))))
+        (cons 'cache-identity-flag-reserved (list (cons 'raw cache-identity-flag-reserved) (cons 'formatted (if (= cache-identity-flag-reserved 0) "Not set" "Set"))))
+        (cons 'key-change-num (list (cons 'raw key-change-num) (cons 'formatted (number->string key-change-num))))
+        (cons 'view-member-change-num (list (cons 'raw view-member-change-num) (cons 'formatted (number->string view-member-change-num))))
+        (cons 'router-num (list (cons 'raw router-num) (cons 'formatted (number->string router-num))))
+        (cons 'view-wc-num (list (cons 'raw view-wc-num) (cons 'formatted (number->string view-wc-num))))
+        (cons 'view-info-change-num (list (cons 'raw view-info-change-num) (cons 'formatted (number->string view-info-change-num))))
+        (cons 'view-router-num (list (cons 'raw view-router-num) (cons 'formatted (number->string view-router-num))))
+        (cons 'assignment-element-change-num (list (cons 'raw assignment-element-change-num) (cons 'formatted (number->string assignment-element-change-num))))
+        (cons 'info-router-num (list (cons 'raw info-router-num) (cons 'formatted (number->string info-router-num))))
+        (cons 'buckets-assignment-wc-num (list (cons 'raw buckets-assignment-wc-num) (cons 'formatted (number->string buckets-assignment-wc-num))))
+        (cons 'table-address-length (list (cons 'raw table-address-length) (cons 'formatted (number->string table-address-length))))
+        (cons 'table-length (list (cons 'raw table-length) (cons 'formatted (number->string table-length))))
+        (cons 'table-element (list (cons 'raw table-element) (cons 'formatted (utf8->string table-element))))
+        (cons 'cache-identity-index (list (cons 'raw cache-identity-index) (cons 'formatted (fmt-hex cache-identity-index))))
+        (cons 'assignment-map-assignment-length (list (cons 'raw assignment-map-assignment-length) (cons 'formatted (number->string assignment-map-assignment-length))))
+        (cons 'weight (list (cons 'raw weight) (cons 'formatted (number->string weight))))
+        (cons 'status (list (cons 'raw status) (cons 'formatted (fmt-hex status))))
+        (cons 'assignment-data-length (list (cons 'raw assignment-data-length) (cons 'formatted (number->string assignment-data-length))))
+        (cons 'element-length (list (cons 'raw element-length) (cons 'formatted (number->string element-length))))
+        (cons 'value (list (cons 'raw value) (cons 'formatted (fmt-bytes value))))
+        (cons 'value-set-list-num-elements (list (cons 'raw value-set-list-num-elements) (cons 'formatted (number->string value-set-list-num-elements))))
+        (cons 'element-src-ip (list (cons 'raw element-src-ip) (cons 'formatted (fmt-hex element-src-ip))))
+        (cons 'element-dest-ip (list (cons 'raw element-dest-ip) (cons 'formatted (fmt-hex element-dest-ip))))
+        (cons 'assignment-mask-value-set-list-num-elements (list (cons 'raw assignment-mask-value-set-list-num-elements) (cons 'formatted (number->string assignment-mask-value-set-list-num-elements))))
+        (cons 'assignment-mask-value-set-element-num-wc-value-elements (list (cons 'raw assignment-mask-value-set-element-num-wc-value-elements) (cons 'formatted (number->string assignment-mask-value-set-element-num-wc-value-elements))))
+        (cons 'cache-value-element-num-values (list (cons 'raw cache-value-element-num-values) (cons 'formatted (number->string cache-value-element-num-values))))
+        (cons 'cache-value-seq-num (list (cons 'raw cache-value-seq-num) (cons 'formatted (number->string cache-value-seq-num))))
+        (cons 'element-src-port (list (cons 'raw element-src-port) (cons 'formatted (number->string element-src-port))))
+        (cons 'element-dest-port (list (cons 'raw element-dest-port) (cons 'formatted (number->string element-dest-port))))
+        (cons 'value-set-element-value-element-num (list (cons 'raw value-set-element-value-element-num) (cons 'formatted (number->string value-set-element-value-element-num))))
+        (cons 'assignment-info-assignment-length (list (cons 'raw assignment-info-assignment-length) (cons 'formatted (number->string assignment-info-assignment-length))))
+        (cons 'assignment-info-num-routers (list (cons 'raw assignment-info-num-routers) (cons 'formatted (number->string assignment-info-num-routers))))
+        (cons 'length (list (cons 'raw length) (cons 'formatted (number->string length))))
+        (cons 'ip (list (cons 'raw ip) (cons 'formatted (fmt-ipv4 ip))))
+        (cons 'data (list (cons 'raw data) (cons 'formatted (fmt-bytes data))))
+        (cons 'hf-bucket (list (cons 'raw hf-bucket) (cons 'formatted (number->string hf-bucket))))
+        (cons 'header-version (list (cons 'raw header-version) (cons 'formatted (fmt-hex header-version))))
+        (cons 'header-length (list (cons 'raw header-length) (cons 'formatted (number->string header-length))))
+        )))
+
+    (catch (e)
+      (err (str "WCCP parse error: " e)))))
+
+;; dissect-wccp: parse WCCP from bytevector
+;; Returns (ok fields-alist) or (err message)

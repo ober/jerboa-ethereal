@@ -1,0 +1,233 @@
+;; packet-mongo.c
+;; Routines for Mongo Wire Protocol dissection
+;; Copyright 2010, Alexis La Goutte <alexis.lagoutte at gmail dot com>
+;; BSON dissection added 2011, Thomas Buchanan <tom at thomasbuchanan dot com>
+;;
+;; Wireshark - Network traffic analyzer
+;; By Gerald Combs <gerald@wireshark.org>
+;; Copyright 1998 Gerald Combs
+;;
+;; SPDX-License-Identifier: GPL-2.0-or-later
+;;
+
+;; jerboa-ethereal/dissectors/mongo.ss
+;; Auto-generated from wireshark/epan/dissectors/packet-mongo.c
+
+(import (jerboa prelude))
+
+;; ── Protocol Helpers ─────────────────────────────────────────────────
+(def (read-u8 buf offset)
+  (if (>= offset (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u8-ref buf offset))))
+
+(def (read-u16be buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness big)))))
+
+(def (read-u24be buf offset)
+  (if (> (+ offset 3) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (+ (* (bytevector-u8-ref buf offset) 65536)
+             (* (bytevector-u8-ref buf (+ offset 1)) 256)
+             (bytevector-u8-ref buf (+ offset 2))))))
+
+(def (read-u32be buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness big)))))
+
+(def (read-u16le buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness little)))))
+
+(def (read-u32le buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness little)))))
+
+(def (read-u64be buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness big)))))
+
+(def (read-u64le buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness little)))))
+
+(def (slice buf offset len)
+  (if (> (+ offset len) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (let ((result (make-bytevector len)))
+            (bytevector-copy! buf offset result 0 len)
+            result))))
+
+(def (extract-bits val mask shift)
+  (bitwise-arithmetic-shift-right (bitwise-and val mask) shift))
+
+(def (fmt-ipv4 addr)
+  (let ((b0 (bitwise-arithmetic-shift-right addr 24))
+        (b1 (bitwise-and (bitwise-arithmetic-shift-right addr 16) 255))
+        (b2 (bitwise-and (bitwise-arithmetic-shift-right addr 8) 255))
+        (b3 (bitwise-and addr 255)))
+    (str b0 "." b1 "." b2 "." b3)))
+
+(def (fmt-mac bytes)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bytes))
+    ":"))
+
+(def (fmt-hex val)
+  (str "0x" (number->string val 16)))
+
+(def (fmt-oct val)
+  (str "0" (number->string val 8)))
+
+(def (fmt-port port)
+  (number->string port))
+
+(def (fmt-bytes bv)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bv))
+    " "))
+
+(def (fmt-ipv6-address bytes)
+  (let loop ((i 0) (parts '()))
+    (if (>= i 16)
+        (string-join (reverse parts) ":")
+        (loop (+ i 2)
+              (cons (let ((w (+ (* (bytevector-u8-ref bytes i) 256)
+                                (bytevector-u8-ref bytes (+ i 1)))))
+                      (number->string w 16))
+                    parts)))))
+
+;; ── Dissector ──────────────────────────────────────────────────────
+(def (dissect-mongo buffer)
+  "Mongo Wire Protocol"
+  (try
+    (let* (
+           (database-name (unwrap (slice buffer 0 1)))
+           (document-length (unwrap (read-u32be buffer 0)))
+           (message-length (unwrap (read-u32be buffer 0)))
+           (element-name (unwrap (slice buffer 4 1)))
+           (element-value-double (unwrap (read-u64be buffer 4)))
+           (request-id (unwrap (read-u32be buffer 4)))
+           (response-to (unwrap (read-u32be buffer 8)))
+           (element-value-binary-length (unwrap (read-u32be buffer 12)))
+           (element-value-binary (unwrap (slice buffer 12 1)))
+           (element-value-objectid (unwrap (slice buffer 12 12)))
+           (element-value-objectid-time (unwrap (read-u32be buffer 12)))
+           (element-value-objectid-machine-id (unwrap (slice buffer 12 5)))
+           (element-value-objectid-host (unwrap (read-u24be buffer 12)))
+           (element-value-objectid-pid (unwrap (read-u16be buffer 12)))
+           (element-value-objectid-inc (unwrap (read-u24be buffer 12)))
+           (unknown (unwrap (slice buffer 16 1)))
+           (element-value-boolean (unwrap (read-u8 buffer 24)))
+           (element-value-regex-pattern (unwrap (slice buffer 25 1)))
+           (element-value-regex-options (unwrap (slice buffer 25 1)))
+           (element-value-db-ptr (unwrap (slice buffer 25 12)))
+           (element-length (unwrap (read-u32be buffer 37)))
+           (element-value-string-length (unwrap (read-u32be buffer 41)))
+           (element-value-string (unwrap (slice buffer 41 1)))
+           (element-value-int32 (unwrap (read-u32be buffer 41)))
+           (element-value-int64 (unwrap (read-u64be buffer 45)))
+           (element-value-decimal128 (unwrap (slice buffer 53 16)))
+           (reply-flags-cursornotfound (unwrap (read-u8 buffer 73)))
+           (reply-flags-queryfailure (unwrap (read-u8 buffer 73)))
+           (reply-flags-sharedconfigstale (unwrap (read-u8 buffer 73)))
+           (reply-flags-awaitcapable (unwrap (read-u8 buffer 73)))
+           (starting-from (unwrap (read-u32be buffer 85)))
+           (number-returned (unwrap (read-u32be buffer 89)))
+           (message (unwrap (slice buffer 93 1)))
+           (update-flags-upsert (unwrap (read-u8 buffer 97)))
+           (update-flags-multiupdate (unwrap (read-u8 buffer 97)))
+           (insert-flags-continueonerror (unwrap (read-u8 buffer 101)))
+           (query-flags-tailablecursor (unwrap (read-u8 buffer 105)))
+           (query-flags-slaveok (unwrap (read-u8 buffer 105)))
+           (query-flags-oplogreplay (unwrap (read-u8 buffer 105)))
+           (query-flags-nocursortimeout (unwrap (read-u8 buffer 105)))
+           (query-flags-awaitdata (unwrap (read-u8 buffer 105)))
+           (query-flags-exhaust (unwrap (read-u8 buffer 105)))
+           (query-flags-partial (unwrap (read-u8 buffer 105)))
+           (number-to-skip (unwrap (read-u32be buffer 109)))
+           (number-to-return (unwrap (read-u32be buffer 121)))
+           (delete-flags-singleremove (unwrap (read-u8 buffer 137)))
+           (zero (unwrap (slice buffer 141 4)))
+           (number-of-cursor-ids (unwrap (read-u32be buffer 145)))
+           (cursor-id (unwrap (read-u64be buffer 149)))
+           (database (unwrap (slice buffer 157 1)))
+           (commandname (unwrap (slice buffer 157 1)))
+           (uncompressed-size (unwrap (read-u32be buffer 157)))
+           (msg-sections-section-size (unwrap (read-u32be buffer 167)))
+           (msg-sections-section-doc-sequence-id (unwrap (slice buffer 171 1)))
+           (fullcollectionname (unwrap (slice buffer 172 1)))
+           )
+
+      (ok (list
+        (cons 'database-name (list (cons 'raw database-name) (cons 'formatted (utf8->string database-name))))
+        (cons 'document-length (list (cons 'raw document-length) (cons 'formatted (number->string document-length))))
+        (cons 'message-length (list (cons 'raw message-length) (cons 'formatted (number->string message-length))))
+        (cons 'element-name (list (cons 'raw element-name) (cons 'formatted (utf8->string element-name))))
+        (cons 'element-value-double (list (cons 'raw element-value-double) (cons 'formatted (number->string element-value-double))))
+        (cons 'request-id (list (cons 'raw request-id) (cons 'formatted (fmt-hex request-id))))
+        (cons 'response-to (list (cons 'raw response-to) (cons 'formatted (fmt-hex response-to))))
+        (cons 'element-value-binary-length (list (cons 'raw element-value-binary-length) (cons 'formatted (number->string element-value-binary-length))))
+        (cons 'element-value-binary (list (cons 'raw element-value-binary) (cons 'formatted (fmt-bytes element-value-binary))))
+        (cons 'element-value-objectid (list (cons 'raw element-value-objectid) (cons 'formatted (fmt-bytes element-value-objectid))))
+        (cons 'element-value-objectid-time (list (cons 'raw element-value-objectid-time) (cons 'formatted (number->string element-value-objectid-time))))
+        (cons 'element-value-objectid-machine-id (list (cons 'raw element-value-objectid-machine-id) (cons 'formatted (fmt-bytes element-value-objectid-machine-id))))
+        (cons 'element-value-objectid-host (list (cons 'raw element-value-objectid-host) (cons 'formatted (fmt-hex element-value-objectid-host))))
+        (cons 'element-value-objectid-pid (list (cons 'raw element-value-objectid-pid) (cons 'formatted (number->string element-value-objectid-pid))))
+        (cons 'element-value-objectid-inc (list (cons 'raw element-value-objectid-inc) (cons 'formatted (number->string element-value-objectid-inc))))
+        (cons 'unknown (list (cons 'raw unknown) (cons 'formatted (fmt-bytes unknown))))
+        (cons 'element-value-boolean (list (cons 'raw element-value-boolean) (cons 'formatted (number->string element-value-boolean))))
+        (cons 'element-value-regex-pattern (list (cons 'raw element-value-regex-pattern) (cons 'formatted (utf8->string element-value-regex-pattern))))
+        (cons 'element-value-regex-options (list (cons 'raw element-value-regex-options) (cons 'formatted (utf8->string element-value-regex-options))))
+        (cons 'element-value-db-ptr (list (cons 'raw element-value-db-ptr) (cons 'formatted (fmt-bytes element-value-db-ptr))))
+        (cons 'element-length (list (cons 'raw element-length) (cons 'formatted (number->string element-length))))
+        (cons 'element-value-string-length (list (cons 'raw element-value-string-length) (cons 'formatted (number->string element-value-string-length))))
+        (cons 'element-value-string (list (cons 'raw element-value-string) (cons 'formatted (utf8->string element-value-string))))
+        (cons 'element-value-int32 (list (cons 'raw element-value-int32) (cons 'formatted (number->string element-value-int32))))
+        (cons 'element-value-int64 (list (cons 'raw element-value-int64) (cons 'formatted (number->string element-value-int64))))
+        (cons 'element-value-decimal128 (list (cons 'raw element-value-decimal128) (cons 'formatted (fmt-bytes element-value-decimal128))))
+        (cons 'reply-flags-cursornotfound (list (cons 'raw reply-flags-cursornotfound) (cons 'formatted (if (= reply-flags-cursornotfound 0) "False" "True"))))
+        (cons 'reply-flags-queryfailure (list (cons 'raw reply-flags-queryfailure) (cons 'formatted (if (= reply-flags-queryfailure 0) "False" "True"))))
+        (cons 'reply-flags-sharedconfigstale (list (cons 'raw reply-flags-sharedconfigstale) (cons 'formatted (if (= reply-flags-sharedconfigstale 0) "False" "True"))))
+        (cons 'reply-flags-awaitcapable (list (cons 'raw reply-flags-awaitcapable) (cons 'formatted (if (= reply-flags-awaitcapable 0) "False" "True"))))
+        (cons 'starting-from (list (cons 'raw starting-from) (cons 'formatted (number->string starting-from))))
+        (cons 'number-returned (list (cons 'raw number-returned) (cons 'formatted (number->string number-returned))))
+        (cons 'message (list (cons 'raw message) (cons 'formatted (utf8->string message))))
+        (cons 'update-flags-upsert (list (cons 'raw update-flags-upsert) (cons 'formatted (if (= update-flags-upsert 0) "False" "True"))))
+        (cons 'update-flags-multiupdate (list (cons 'raw update-flags-multiupdate) (cons 'formatted (if (= update-flags-multiupdate 0) "False" "True"))))
+        (cons 'insert-flags-continueonerror (list (cons 'raw insert-flags-continueonerror) (cons 'formatted (if (= insert-flags-continueonerror 0) "False" "True"))))
+        (cons 'query-flags-tailablecursor (list (cons 'raw query-flags-tailablecursor) (cons 'formatted (if (= query-flags-tailablecursor 0) "False" "True"))))
+        (cons 'query-flags-slaveok (list (cons 'raw query-flags-slaveok) (cons 'formatted (if (= query-flags-slaveok 0) "False" "True"))))
+        (cons 'query-flags-oplogreplay (list (cons 'raw query-flags-oplogreplay) (cons 'formatted (if (= query-flags-oplogreplay 0) "False" "True"))))
+        (cons 'query-flags-nocursortimeout (list (cons 'raw query-flags-nocursortimeout) (cons 'formatted (if (= query-flags-nocursortimeout 0) "False" "True"))))
+        (cons 'query-flags-awaitdata (list (cons 'raw query-flags-awaitdata) (cons 'formatted (if (= query-flags-awaitdata 0) "False" "True"))))
+        (cons 'query-flags-exhaust (list (cons 'raw query-flags-exhaust) (cons 'formatted (if (= query-flags-exhaust 0) "False" "True"))))
+        (cons 'query-flags-partial (list (cons 'raw query-flags-partial) (cons 'formatted (if (= query-flags-partial 0) "False" "True"))))
+        (cons 'number-to-skip (list (cons 'raw number-to-skip) (cons 'formatted (number->string number-to-skip))))
+        (cons 'number-to-return (list (cons 'raw number-to-return) (cons 'formatted (number->string number-to-return))))
+        (cons 'delete-flags-singleremove (list (cons 'raw delete-flags-singleremove) (cons 'formatted (if (= delete-flags-singleremove 0) "False" "True"))))
+        (cons 'zero (list (cons 'raw zero) (cons 'formatted (fmt-bytes zero))))
+        (cons 'number-of-cursor-ids (list (cons 'raw number-of-cursor-ids) (cons 'formatted (number->string number-of-cursor-ids))))
+        (cons 'cursor-id (list (cons 'raw cursor-id) (cons 'formatted (number->string cursor-id))))
+        (cons 'database (list (cons 'raw database) (cons 'formatted (utf8->string database))))
+        (cons 'commandname (list (cons 'raw commandname) (cons 'formatted (utf8->string commandname))))
+        (cons 'uncompressed-size (list (cons 'raw uncompressed-size) (cons 'formatted (number->string uncompressed-size))))
+        (cons 'msg-sections-section-size (list (cons 'raw msg-sections-section-size) (cons 'formatted (number->string msg-sections-section-size))))
+        (cons 'msg-sections-section-doc-sequence-id (list (cons 'raw msg-sections-section-doc-sequence-id) (cons 'formatted (utf8->string msg-sections-section-doc-sequence-id))))
+        (cons 'fullcollectionname (list (cons 'raw fullcollectionname) (cons 'formatted (utf8->string fullcollectionname))))
+        )))
+
+    (catch (e)
+      (err (str "MONGO parse error: " e)))))
+
+;; dissect-mongo: parse MONGO from bytevector
+;; Returns (ok fields-alist) or (err message)

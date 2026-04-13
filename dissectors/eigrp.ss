@@ -1,0 +1,253 @@
+;; packet-eigrp.c
+;; Routines for EIGRP dissection
+;; Copyright 2011, Donnie V Savage <dsavage@cisco.com>
+;;
+;; Complete re-write and replaces previous file of same name authored by:
+;; Copyright 2009, Jochen Bartl <jochen.bartl@gmail.co
+;; Copyright 2000, Paul Ionescu <paul@acorp.ro>
+;;
+;; Wireshark - Network traffic analyzer
+;; By Gerald Combs <gerald@wireshark.org>
+;; Copyright 1998 Gerald Combs
+;;
+;; SPDX-License-Identifier: GPL-2.0-or-later
+;;
+
+;; jerboa-ethereal/dissectors/eigrp.ss
+;; Auto-generated from wireshark/epan/dissectors/packet-eigrp.c
+;; RFC 7868
+
+(import (jerboa prelude))
+
+;; ── Protocol Helpers ─────────────────────────────────────────────────
+(def (read-u8 buf offset)
+  (if (>= offset (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u8-ref buf offset))))
+
+(def (read-u16be buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness big)))))
+
+(def (read-u24be buf offset)
+  (if (> (+ offset 3) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (+ (* (bytevector-u8-ref buf offset) 65536)
+             (* (bytevector-u8-ref buf (+ offset 1)) 256)
+             (bytevector-u8-ref buf (+ offset 2))))))
+
+(def (read-u32be buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness big)))))
+
+(def (read-u16le buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness little)))))
+
+(def (read-u32le buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness little)))))
+
+(def (read-u64be buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness big)))))
+
+(def (read-u64le buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness little)))))
+
+(def (slice buf offset len)
+  (if (> (+ offset len) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (let ((result (make-bytevector len)))
+            (bytevector-copy! buf offset result 0 len)
+            result))))
+
+(def (extract-bits val mask shift)
+  (bitwise-arithmetic-shift-right (bitwise-and val mask) shift))
+
+(def (fmt-ipv4 addr)
+  (let ((b0 (bitwise-arithmetic-shift-right addr 24))
+        (b1 (bitwise-and (bitwise-arithmetic-shift-right addr 16) 255))
+        (b2 (bitwise-and (bitwise-arithmetic-shift-right addr 8) 255))
+        (b3 (bitwise-and addr 255)))
+    (str b0 "." b1 "." b2 "." b3)))
+
+(def (fmt-mac bytes)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bytes))
+    ":"))
+
+(def (fmt-hex val)
+  (str "0x" (number->string val 16)))
+
+(def (fmt-oct val)
+  (str "0" (number->string val 8)))
+
+(def (fmt-port port)
+  (number->string port))
+
+(def (fmt-bytes bv)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bv))
+    " "))
+
+(def (fmt-ipv6-address bytes)
+  (let loop ((i 0) (parts '()))
+    (if (>= i 16)
+        (string-join (reverse parts) ":")
+        (loop (+ i 2)
+              (cons (let ((w (+ (* (bytevector-u8-ref bytes i) 256)
+                                (bytevector-u8-ref bytes (+ i 1)))))
+                      (number->string w 16))
+                    parts)))))
+
+;; ── Dissector ──────────────────────────────────────────────────────
+(def (dissect-eigrp buffer)
+  "Enhanced Interior Gateway Routing Protocol"
+  (try
+    (let* (
+           (stub-flags (unwrap (read-u16be buffer 0)))
+           (stub-flags-connected (extract-bits stub-flags 0x0 0))
+           (stub-flags-static (extract-bits stub-flags 0x0 0))
+           (stub-flags-summary (extract-bits stub-flags 0x0 0))
+           (stub-flags-redist (extract-bits stub-flags 0x0 0))
+           (stub-flags-leakmap (extract-bits stub-flags 0x0 0))
+           (stub-flags-recvonly (extract-bits stub-flags 0x0 0))
+           (version (unwrap (read-u8 buffer 0)))
+           (next-mcast-seq (unwrap (read-u32be buffer 0)))
+           (par-k1 (unwrap (read-u8 buffer 0)))
+           (seq-addrlen (unwrap (read-u8 buffer 0)))
+           (tidlist-flags (unwrap (read-u16be buffer 0)))
+           (ipv4-nexthop (unwrap (read-u32be buffer 0)))
+           (ipv6-nexthop (unwrap (slice buffer 0 16)))
+           (tid (unwrap (read-u16be buffer 0)))
+           (par-k2 (unwrap (read-u8 buffer 1)))
+           (seq-ipv4addr (unwrap (read-u32be buffer 1)))
+           (ipx-address (unwrap (slice buffer 1 1)))
+           (seq-ipv6addr (unwrap (slice buffer 1 16)))
+           (par-k3 (unwrap (read-u8 buffer 2)))
+           (auth-len (unwrap (read-u16be buffer 2)))
+           (tidlist-len (unwrap (read-u16be buffer 2)))
+           (par-k4 (unwrap (read-u8 buffer 3)))
+           (flags (unwrap (read-u32be buffer 4)))
+           (flags-init (extract-bits flags 0x0 0))
+           (flags-condrecv (extract-bits flags 0x0 0))
+           (flags-restart (extract-bits flags 0x0 0))
+           (flags-eot (extract-bits flags 0x0 0))
+           (atalk-routerid (unwrap (read-u32be buffer 4)))
+           (par-k5 (unwrap (read-u8 buffer 4)))
+           (auth-keyid (unwrap (read-u32be buffer 4)))
+           (tidlist-tid (unwrap (read-u16be buffer 4)))
+           (routerid (unwrap (read-u32be buffer 4)))
+           (par-k6 (unwrap (read-u8 buffer 5)))
+           (par-holdtime (unwrap (read-u16be buffer 6)))
+           (ipv4-prefixlen (unwrap (read-u8 buffer 7)))
+           (sequence (unwrap (read-u32be buffer 8)))
+           (auth-keyseq (unwrap (read-u32be buffer 8)))
+           (ipv4-destination (unwrap (read-u32be buffer 8)))
+           (ipv6-prefixlen (unwrap (read-u8 buffer 8)))
+           (ipv6-destination (unwrap (slice buffer 9 16)))
+           (legacy-metric-tag (unwrap (read-u32be buffer 10)))
+           (acknowledge (unwrap (read-u32be buffer 12)))
+           (nullpad (unwrap (slice buffer 12 8)))
+           (vrid (unwrap (read-u16be buffer 16)))
+           (extcomm-eigrp-flag (unwrap (read-u16be buffer 16)))
+           (extcomm-eigrp-tag (unwrap (read-u32be buffer 16)))
+           (extcomm-eigrp-res (unwrap (read-u16be buffer 16)))
+           (extcomm-eigrp-rid (unwrap (read-u32be buffer 16)))
+           (extcomm-eigrp-as (unwrap (read-u16be buffer 16)))
+           (extcomm-eigrp-sdly (unwrap (read-u32be buffer 16)))
+           (extcomm-eigrp-rel (unwrap (read-u8 buffer 16)))
+           (extcomm-eigrp-hop (unwrap (read-u8 buffer 16)))
+           (extcomm-eigrp-sbw (unwrap (read-u32be buffer 16)))
+           (extcomm-eigrp-load (unwrap (read-u8 buffer 16)))
+           (extcomm-eigrp-mtu (unwrap (read-u32be buffer 16)))
+           (extcomm-eigrp-xas (unwrap (read-u16be buffer 16)))
+           (extcomm-eigrp-xrid (unwrap (read-u32be buffer 16)))
+           (extcomm-eigrp-xproto (unwrap (read-u16be buffer 16)))
+           (extcomm-eigrp-xmetric (unwrap (read-u32be buffer 16)))
+           (as (unwrap (read-u16be buffer 18)))
+           (auth-digest (unwrap (slice buffer 20 1)))
+           (ipx-nexthop-host (unwrap (slice buffer 127 6)))
+           )
+
+      (ok (list
+        (cons 'stub-flags (list (cons 'raw stub-flags) (cons 'formatted (fmt-hex stub-flags))))
+        (cons 'stub-flags-connected (list (cons 'raw stub-flags-connected) (cons 'formatted (if (= stub-flags-connected 0) "Not set" "Set"))))
+        (cons 'stub-flags-static (list (cons 'raw stub-flags-static) (cons 'formatted (if (= stub-flags-static 0) "Not set" "Set"))))
+        (cons 'stub-flags-summary (list (cons 'raw stub-flags-summary) (cons 'formatted (if (= stub-flags-summary 0) "Not set" "Set"))))
+        (cons 'stub-flags-redist (list (cons 'raw stub-flags-redist) (cons 'formatted (if (= stub-flags-redist 0) "Not set" "Set"))))
+        (cons 'stub-flags-leakmap (list (cons 'raw stub-flags-leakmap) (cons 'formatted (if (= stub-flags-leakmap 0) "Not set" "Set"))))
+        (cons 'stub-flags-recvonly (list (cons 'raw stub-flags-recvonly) (cons 'formatted (if (= stub-flags-recvonly 0) "Not set" "Set"))))
+        (cons 'version (list (cons 'raw version) (cons 'formatted (number->string version))))
+        (cons 'next-mcast-seq (list (cons 'raw next-mcast-seq) (cons 'formatted (number->string next-mcast-seq))))
+        (cons 'par-k1 (list (cons 'raw par-k1) (cons 'formatted (number->string par-k1))))
+        (cons 'seq-addrlen (list (cons 'raw seq-addrlen) (cons 'formatted (number->string seq-addrlen))))
+        (cons 'tidlist-flags (list (cons 'raw tidlist-flags) (cons 'formatted (fmt-hex tidlist-flags))))
+        (cons 'ipv4-nexthop (list (cons 'raw ipv4-nexthop) (cons 'formatted (fmt-ipv4 ipv4-nexthop))))
+        (cons 'ipv6-nexthop (list (cons 'raw ipv6-nexthop) (cons 'formatted (fmt-ipv6-address ipv6-nexthop))))
+        (cons 'tid (list (cons 'raw tid) (cons 'formatted (number->string tid))))
+        (cons 'par-k2 (list (cons 'raw par-k2) (cons 'formatted (number->string par-k2))))
+        (cons 'seq-ipv4addr (list (cons 'raw seq-ipv4addr) (cons 'formatted (fmt-ipv4 seq-ipv4addr))))
+        (cons 'ipx-address (list (cons 'raw ipx-address) (cons 'formatted (fmt-bytes ipx-address))))
+        (cons 'seq-ipv6addr (list (cons 'raw seq-ipv6addr) (cons 'formatted (fmt-ipv6-address seq-ipv6addr))))
+        (cons 'par-k3 (list (cons 'raw par-k3) (cons 'formatted (number->string par-k3))))
+        (cons 'auth-len (list (cons 'raw auth-len) (cons 'formatted (number->string auth-len))))
+        (cons 'tidlist-len (list (cons 'raw tidlist-len) (cons 'formatted (number->string tidlist-len))))
+        (cons 'par-k4 (list (cons 'raw par-k4) (cons 'formatted (number->string par-k4))))
+        (cons 'flags (list (cons 'raw flags) (cons 'formatted (fmt-hex flags))))
+        (cons 'flags-init (list (cons 'raw flags-init) (cons 'formatted (if (= flags-init 0) "Not set" "Set"))))
+        (cons 'flags-condrecv (list (cons 'raw flags-condrecv) (cons 'formatted (if (= flags-condrecv 0) "Not set" "Set"))))
+        (cons 'flags-restart (list (cons 'raw flags-restart) (cons 'formatted (if (= flags-restart 0) "Not set" "Set"))))
+        (cons 'flags-eot (list (cons 'raw flags-eot) (cons 'formatted (if (= flags-eot 0) "Not set" "Set"))))
+        (cons 'atalk-routerid (list (cons 'raw atalk-routerid) (cons 'formatted (number->string atalk-routerid))))
+        (cons 'par-k5 (list (cons 'raw par-k5) (cons 'formatted (number->string par-k5))))
+        (cons 'auth-keyid (list (cons 'raw auth-keyid) (cons 'formatted (number->string auth-keyid))))
+        (cons 'tidlist-tid (list (cons 'raw tidlist-tid) (cons 'formatted (number->string tidlist-tid))))
+        (cons 'routerid (list (cons 'raw routerid) (cons 'formatted (fmt-ipv4 routerid))))
+        (cons 'par-k6 (list (cons 'raw par-k6) (cons 'formatted (number->string par-k6))))
+        (cons 'par-holdtime (list (cons 'raw par-holdtime) (cons 'formatted (number->string par-holdtime))))
+        (cons 'ipv4-prefixlen (list (cons 'raw ipv4-prefixlen) (cons 'formatted (number->string ipv4-prefixlen))))
+        (cons 'sequence (list (cons 'raw sequence) (cons 'formatted (number->string sequence))))
+        (cons 'auth-keyseq (list (cons 'raw auth-keyseq) (cons 'formatted (number->string auth-keyseq))))
+        (cons 'ipv4-destination (list (cons 'raw ipv4-destination) (cons 'formatted (fmt-ipv4 ipv4-destination))))
+        (cons 'ipv6-prefixlen (list (cons 'raw ipv6-prefixlen) (cons 'formatted (number->string ipv6-prefixlen))))
+        (cons 'ipv6-destination (list (cons 'raw ipv6-destination) (cons 'formatted (fmt-ipv6-address ipv6-destination))))
+        (cons 'legacy-metric-tag (list (cons 'raw legacy-metric-tag) (cons 'formatted (number->string legacy-metric-tag))))
+        (cons 'acknowledge (list (cons 'raw acknowledge) (cons 'formatted (number->string acknowledge))))
+        (cons 'nullpad (list (cons 'raw nullpad) (cons 'formatted (fmt-bytes nullpad))))
+        (cons 'vrid (list (cons 'raw vrid) (cons 'formatted (number->string vrid))))
+        (cons 'extcomm-eigrp-flag (list (cons 'raw extcomm-eigrp-flag) (cons 'formatted (fmt-hex extcomm-eigrp-flag))))
+        (cons 'extcomm-eigrp-tag (list (cons 'raw extcomm-eigrp-tag) (cons 'formatted (number->string extcomm-eigrp-tag))))
+        (cons 'extcomm-eigrp-res (list (cons 'raw extcomm-eigrp-res) (cons 'formatted (fmt-hex extcomm-eigrp-res))))
+        (cons 'extcomm-eigrp-rid (list (cons 'raw extcomm-eigrp-rid) (cons 'formatted (number->string extcomm-eigrp-rid))))
+        (cons 'extcomm-eigrp-as (list (cons 'raw extcomm-eigrp-as) (cons 'formatted (number->string extcomm-eigrp-as))))
+        (cons 'extcomm-eigrp-sdly (list (cons 'raw extcomm-eigrp-sdly) (cons 'formatted (number->string extcomm-eigrp-sdly))))
+        (cons 'extcomm-eigrp-rel (list (cons 'raw extcomm-eigrp-rel) (cons 'formatted (number->string extcomm-eigrp-rel))))
+        (cons 'extcomm-eigrp-hop (list (cons 'raw extcomm-eigrp-hop) (cons 'formatted (number->string extcomm-eigrp-hop))))
+        (cons 'extcomm-eigrp-sbw (list (cons 'raw extcomm-eigrp-sbw) (cons 'formatted (number->string extcomm-eigrp-sbw))))
+        (cons 'extcomm-eigrp-load (list (cons 'raw extcomm-eigrp-load) (cons 'formatted (number->string extcomm-eigrp-load))))
+        (cons 'extcomm-eigrp-mtu (list (cons 'raw extcomm-eigrp-mtu) (cons 'formatted (number->string extcomm-eigrp-mtu))))
+        (cons 'extcomm-eigrp-xas (list (cons 'raw extcomm-eigrp-xas) (cons 'formatted (fmt-hex extcomm-eigrp-xas))))
+        (cons 'extcomm-eigrp-xrid (list (cons 'raw extcomm-eigrp-xrid) (cons 'formatted (number->string extcomm-eigrp-xrid))))
+        (cons 'extcomm-eigrp-xproto (list (cons 'raw extcomm-eigrp-xproto) (cons 'formatted (fmt-hex extcomm-eigrp-xproto))))
+        (cons 'extcomm-eigrp-xmetric (list (cons 'raw extcomm-eigrp-xmetric) (cons 'formatted (number->string extcomm-eigrp-xmetric))))
+        (cons 'as (list (cons 'raw as) (cons 'formatted (number->string as))))
+        (cons 'auth-digest (list (cons 'raw auth-digest) (cons 'formatted (fmt-bytes auth-digest))))
+        (cons 'ipx-nexthop-host (list (cons 'raw ipx-nexthop-host) (cons 'formatted (fmt-mac ipx-nexthop-host))))
+        )))
+
+    (catch (e)
+      (err (str "EIGRP parse error: " e)))))
+
+;; dissect-eigrp: parse EIGRP from bytevector
+;; Returns (ok fields-alist) or (err message)

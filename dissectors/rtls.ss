@@ -1,0 +1,220 @@
+;; packet-rtls.c
+;; Routines for Real Time Location System dissection
+;; Copyright 2016, Alexis La Goutte (See Authors)
+;;
+;; Wireshark - Network traffic analyzer
+;; By Gerald Combs <gerald@wireshark.org>
+;; Copyright 1998 Gerald Combs
+;;
+;; SPDX-License-Identifier: GPL-2.0-or-later
+;;
+
+;; jerboa-ethereal/dissectors/rtls.ss
+;; Auto-generated from wireshark/epan/dissectors/packet-rtls.c
+
+(import (jerboa prelude))
+
+;; ── Protocol Helpers ─────────────────────────────────────────────────
+(def (read-u8 buf offset)
+  (if (>= offset (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u8-ref buf offset))))
+
+(def (read-u16be buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness big)))))
+
+(def (read-u24be buf offset)
+  (if (> (+ offset 3) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (+ (* (bytevector-u8-ref buf offset) 65536)
+             (* (bytevector-u8-ref buf (+ offset 1)) 256)
+             (bytevector-u8-ref buf (+ offset 2))))))
+
+(def (read-u32be buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness big)))))
+
+(def (read-u16le buf offset)
+  (if (> (+ offset 2) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u16-ref buf offset (endianness little)))))
+
+(def (read-u32le buf offset)
+  (if (> (+ offset 4) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u32-ref buf offset (endianness little)))))
+
+(def (read-u64be buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness big)))))
+
+(def (read-u64le buf offset)
+  (if (> (+ offset 8) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (bytevector-u64-ref buf offset (endianness little)))))
+
+(def (slice buf offset len)
+  (if (> (+ offset len) (bytevector-length buf))
+      (err "Buffer overrun")
+      (ok (let ((result (make-bytevector len)))
+            (bytevector-copy! buf offset result 0 len)
+            result))))
+
+(def (extract-bits val mask shift)
+  (bitwise-arithmetic-shift-right (bitwise-and val mask) shift))
+
+(def (fmt-ipv4 addr)
+  (let ((b0 (bitwise-arithmetic-shift-right addr 24))
+        (b1 (bitwise-and (bitwise-arithmetic-shift-right addr 16) 255))
+        (b2 (bitwise-and (bitwise-arithmetic-shift-right addr 8) 255))
+        (b3 (bitwise-and addr 255)))
+    (str b0 "." b1 "." b2 "." b3)))
+
+(def (fmt-mac bytes)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bytes))
+    ":"))
+
+(def (fmt-hex val)
+  (str "0x" (number->string val 16)))
+
+(def (fmt-oct val)
+  (str "0" (number->string val 8)))
+
+(def (fmt-port port)
+  (number->string port))
+
+(def (fmt-bytes bv)
+  (string-join
+    (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+         (bytevector->list bv))
+    " "))
+
+(def (fmt-ipv6-address bytes)
+  (let loop ((i 0) (parts '()))
+    (if (>= i 16)
+        (string-join (reverse parts) ":")
+        (loop (+ i 2)
+              (cons (let ((w (+ (* (bytevector-u8-ref bytes i) 256)
+                                (bytevector-u8-ref bytes (+ i 1)))))
+                      (number->string w 16))
+                    parts)))))
+
+;; ── Dissector ──────────────────────────────────────────────────────
+(def (dissect-rtls buffer)
+  "Real Time Location System"
+  (try
+    (let* (
+           (signature (unwrap (slice buffer 0 1)))
+           (message-id (unwrap (read-u16be buffer 2)))
+           (version-major (unwrap (read-u8 buffer 4)))
+           (version-minor (unwrap (read-u8 buffer 5)))
+           (data-length (unwrap (read-u16be buffer 6)))
+           (ap-mac (unwrap (slice buffer 8 6)))
+           (padding (unwrap (slice buffer 14 2)))
+           (as-tag-addr (unwrap (slice buffer 16 6)))
+           (sr-mac-address (unwrap (slice buffer 24 6)))
+           (nack-flags (unwrap (read-u16be buffer 32)))
+           (nack-flags-internal-error (extract-bits nack-flags 0x1 0))
+           (nack-flags-station-not-found (extract-bits nack-flags 0x2 1))
+           (nack-flags-reserved (extract-bits nack-flags 0xFC 2))
+           (tr-bssid (unwrap (slice buffer 36 6)))
+           (tr-rssi (unwrap (read-u8 buffer 42)))
+           (tr-noise-floor (unwrap (read-u8 buffer 43)))
+           (tr-timestamp (unwrap (read-u32be buffer 44)))
+           (tr-tag-mac (unwrap (slice buffer 48 6)))
+           (tr-frame-control (unwrap (read-u16be buffer 54)))
+           (tr-sequence (unwrap (read-u16be buffer 56)))
+           (tr-tx-power (unwrap (read-u8 buffer 59)))
+           (tr-channel (unwrap (read-u8 buffer 60)))
+           (tr-battery (unwrap (read-u8 buffer 61)))
+           (sr-mac (unwrap (slice buffer 64 6)))
+           (sr-noise-floor (unwrap (read-u8 buffer 70)))
+           (sr-channel (unwrap (read-u8 buffer 72)))
+           (sr-rssi (unwrap (read-u8 buffer 73)))
+           (sr-radio-bssid (unwrap (slice buffer 76 6)))
+           (sr-mon-bssid (unwrap (slice buffer 82 6)))
+           (sr-age (unwrap (read-u32be buffer 88)))
+           (ser-mac (unwrap (slice buffer 92 6)))
+           (ser-bssid (unwrap (slice buffer 98 6)))
+           (ser-essid (unwrap (slice buffer 104 33)))
+           (ser-channel (unwrap (read-u8 buffer 137)))
+           (ser-rssi (unwrap (read-u8 buffer 139)))
+           (ser-duration (unwrap (read-u16be buffer 140)))
+           (ser-num-packets (unwrap (read-u16be buffer 142)))
+           (ser-noise-floor (unwrap (read-u8 buffer 144)))
+           (aer-bssid (unwrap (slice buffer 148 6)))
+           (aer-essid (unwrap (slice buffer 154 33)))
+           (aer-channel (unwrap (read-u8 buffer 187)))
+           (aer-rssi (unwrap (read-u8 buffer 189)))
+           (aer-duration (unwrap (read-u16be buffer 190)))
+           (aer-num-packets (unwrap (read-u16be buffer 192)))
+           (aer-noise-floor (unwrap (read-u8 buffer 194)))
+           (aer-match-type (unwrap (read-u8 buffer 196)))
+           (aer-match-method (unwrap (read-u8 buffer 197)))
+           (cmr-messages (unwrap (read-u16be buffer 200)))
+           (reserved (unwrap (slice buffer 202 2)))
+           )
+
+      (ok (list
+        (cons 'signature (list (cons 'raw signature) (cons 'formatted (fmt-bytes signature))))
+        (cons 'message-id (list (cons 'raw message-id) (cons 'formatted (number->string message-id))))
+        (cons 'version-major (list (cons 'raw version-major) (cons 'formatted (number->string version-major))))
+        (cons 'version-minor (list (cons 'raw version-minor) (cons 'formatted (number->string version-minor))))
+        (cons 'data-length (list (cons 'raw data-length) (cons 'formatted (number->string data-length))))
+        (cons 'ap-mac (list (cons 'raw ap-mac) (cons 'formatted (fmt-mac ap-mac))))
+        (cons 'padding (list (cons 'raw padding) (cons 'formatted (fmt-bytes padding))))
+        (cons 'as-tag-addr (list (cons 'raw as-tag-addr) (cons 'formatted (fmt-mac as-tag-addr))))
+        (cons 'sr-mac-address (list (cons 'raw sr-mac-address) (cons 'formatted (fmt-mac sr-mac-address))))
+        (cons 'nack-flags (list (cons 'raw nack-flags) (cons 'formatted (fmt-hex nack-flags))))
+        (cons 'nack-flags-internal-error (list (cons 'raw nack-flags-internal-error) (cons 'formatted (if (= nack-flags-internal-error 0) "Not set" "Set"))))
+        (cons 'nack-flags-station-not-found (list (cons 'raw nack-flags-station-not-found) (cons 'formatted (if (= nack-flags-station-not-found 0) "Not set" "Set"))))
+        (cons 'nack-flags-reserved (list (cons 'raw nack-flags-reserved) (cons 'formatted (if (= nack-flags-reserved 0) "Not set" "Set"))))
+        (cons 'tr-bssid (list (cons 'raw tr-bssid) (cons 'formatted (fmt-mac tr-bssid))))
+        (cons 'tr-rssi (list (cons 'raw tr-rssi) (cons 'formatted (number->string tr-rssi))))
+        (cons 'tr-noise-floor (list (cons 'raw tr-noise-floor) (cons 'formatted (number->string tr-noise-floor))))
+        (cons 'tr-timestamp (list (cons 'raw tr-timestamp) (cons 'formatted (number->string tr-timestamp))))
+        (cons 'tr-tag-mac (list (cons 'raw tr-tag-mac) (cons 'formatted (fmt-mac tr-tag-mac))))
+        (cons 'tr-frame-control (list (cons 'raw tr-frame-control) (cons 'formatted (fmt-hex tr-frame-control))))
+        (cons 'tr-sequence (list (cons 'raw tr-sequence) (cons 'formatted (number->string tr-sequence))))
+        (cons 'tr-tx-power (list (cons 'raw tr-tx-power) (cons 'formatted (number->string tr-tx-power))))
+        (cons 'tr-channel (list (cons 'raw tr-channel) (cons 'formatted (number->string tr-channel))))
+        (cons 'tr-battery (list (cons 'raw tr-battery) (cons 'formatted (number->string tr-battery))))
+        (cons 'sr-mac (list (cons 'raw sr-mac) (cons 'formatted (fmt-mac sr-mac))))
+        (cons 'sr-noise-floor (list (cons 'raw sr-noise-floor) (cons 'formatted (number->string sr-noise-floor))))
+        (cons 'sr-channel (list (cons 'raw sr-channel) (cons 'formatted (number->string sr-channel))))
+        (cons 'sr-rssi (list (cons 'raw sr-rssi) (cons 'formatted (number->string sr-rssi))))
+        (cons 'sr-radio-bssid (list (cons 'raw sr-radio-bssid) (cons 'formatted (fmt-mac sr-radio-bssid))))
+        (cons 'sr-mon-bssid (list (cons 'raw sr-mon-bssid) (cons 'formatted (fmt-mac sr-mon-bssid))))
+        (cons 'sr-age (list (cons 'raw sr-age) (cons 'formatted (number->string sr-age))))
+        (cons 'ser-mac (list (cons 'raw ser-mac) (cons 'formatted (fmt-mac ser-mac))))
+        (cons 'ser-bssid (list (cons 'raw ser-bssid) (cons 'formatted (fmt-mac ser-bssid))))
+        (cons 'ser-essid (list (cons 'raw ser-essid) (cons 'formatted (utf8->string ser-essid))))
+        (cons 'ser-channel (list (cons 'raw ser-channel) (cons 'formatted (number->string ser-channel))))
+        (cons 'ser-rssi (list (cons 'raw ser-rssi) (cons 'formatted (number->string ser-rssi))))
+        (cons 'ser-duration (list (cons 'raw ser-duration) (cons 'formatted (number->string ser-duration))))
+        (cons 'ser-num-packets (list (cons 'raw ser-num-packets) (cons 'formatted (number->string ser-num-packets))))
+        (cons 'ser-noise-floor (list (cons 'raw ser-noise-floor) (cons 'formatted (number->string ser-noise-floor))))
+        (cons 'aer-bssid (list (cons 'raw aer-bssid) (cons 'formatted (fmt-mac aer-bssid))))
+        (cons 'aer-essid (list (cons 'raw aer-essid) (cons 'formatted (utf8->string aer-essid))))
+        (cons 'aer-channel (list (cons 'raw aer-channel) (cons 'formatted (number->string aer-channel))))
+        (cons 'aer-rssi (list (cons 'raw aer-rssi) (cons 'formatted (number->string aer-rssi))))
+        (cons 'aer-duration (list (cons 'raw aer-duration) (cons 'formatted (number->string aer-duration))))
+        (cons 'aer-num-packets (list (cons 'raw aer-num-packets) (cons 'formatted (number->string aer-num-packets))))
+        (cons 'aer-noise-floor (list (cons 'raw aer-noise-floor) (cons 'formatted (number->string aer-noise-floor))))
+        (cons 'aer-match-type (list (cons 'raw aer-match-type) (cons 'formatted (fmt-hex aer-match-type))))
+        (cons 'aer-match-method (list (cons 'raw aer-match-method) (cons 'formatted (fmt-hex aer-match-method))))
+        (cons 'cmr-messages (list (cons 'raw cmr-messages) (cons 'formatted (number->string cmr-messages))))
+        (cons 'reserved (list (cons 'raw reserved) (cons 'formatted (fmt-bytes reserved))))
+        )))
+
+    (catch (e)
+      (err (str "RTLS parse error: " e)))))
+
+;; dissect-rtls: parse RTLS from bytevector
+;; Returns (ok fields-alist) or (err message)
