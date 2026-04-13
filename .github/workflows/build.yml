@@ -1,0 +1,72 @@
+name: Build wafter-musl
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build static binary via Docker
+        run: make linux
+
+      - name: Verify binary
+        run: |
+          ./wafter-musl --version
+          file wafter-musl
+          ls -lh wafter-musl
+          cat wafter-musl.sha256
+
+      - name: Hardening checks
+        run: |
+          file wafter-musl | grep -qE 'stripped|no section header' && echo "PASS: stripped" || (echo "FAIL: not stripped"; exit 1)
+          [ -f wafter-musl.sha256 ] && echo "PASS: hash present" || (echo "FAIL: no hash"; exit 1)
+          count=$(strings wafter-musl | grep -c '/home/' || true)
+          [ "$count" -gt 0 ] && echo "WARNING: $count home paths found" || echo "PASS: no home path leaks"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wafter-musl-linux-amd64
+          path: |
+            wafter-musl
+            wafter-musl.sha256
+          retention-days: 30
+
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            wafter-musl
+            wafter-musl.sha256
+          generate_release_notes: true
+          body: |
+            ## wafter — PCAP packet analyzer
+
+            Fully static Linux binary (musl libc), zero runtime dependencies.
+
+            ### Protocols
+            Ethernet, IPv4, IPv6, ARP, TCP, UDP, ICMP, ICMPv6, IGMP, DNS, DHCP, NTP, SSH
+
+            ### Usage
+            ```
+            chmod +x wafter-musl
+            ./wafter-musl capture.pcap stats
+            ./wafter-musl capture.pcap protocols
+            ./wafter-musl capture.pcap list 20
+            ```
+
+            ### Verify integrity
+            ```
+            sha256sum -c wafter-musl.sha256
+            ```
