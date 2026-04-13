@@ -154,7 +154,14 @@
               (pcap-close cap))
             (displayln (str "\nCaptured " n " packet(s).")))
           (catch (e)
-            (displayln (str "Capture error: " e)))))))
+            (let ((msg (cond
+                         ((and (condition? e) (message-condition? e))
+                          (condition-message e))
+                         (else (str e)))))
+              (displayln (str "Capture error: " msg))
+              (when (or (string-contains msg "ermission")
+                        (string-contains msg "peration not"))
+                (displayln "  Hint: live capture requires root — try: sudo ./wafter-macos capture ..."))))))))
 
 ;; wafter-main is called by the C entry point in the static binary
 (def (wafter-main)
