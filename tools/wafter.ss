@@ -38,22 +38,22 @@
 ;; ── PCAP Reader ───────────────────────────────────────────────────────────
 
 (def (read-pcap-packets file-path)
-  (call-with-input-file file-path
-    (lambda (port)
-      ;; Skip PCAP global header (24 bytes)
-      (read-bytevector 24 port)
-
-      (let loop ((packets '()))
-        (let ((pkt-header (read-bytevector 16 port)))
-          (if (eof-object? pkt-header)
-              (reverse packets)
-              (let* ((ts-sec (bytevector-u32-ref pkt-header 0 (endianness little)))
-                     (capt-len (bytevector-u32-ref pkt-header 8 (endianness little)))
-                     (pkt-data (read-bytevector capt-len port)))
-
-                (if (eof-object? pkt-data)
-                    (reverse packets)
-                    (loop (cons (cons ts-sec pkt-data) packets))))))))))
+  (let ((port (open-file-input-port file-path)))
+    (unwind-protect
+      (begin
+        ;; Skip PCAP global header (24 bytes)
+        (get-bytevector-n port 24)
+        (let loop ((packets '()))
+          (let ((pkt-header (get-bytevector-n port 16)))
+            (if (eof-object? pkt-header)
+                (reverse packets)
+                (let* ((ts-sec (bytevector-u32-ref pkt-header 0 (endianness little)))
+                       (capt-len (bytevector-u32-ref pkt-header 8 (endianness little)))
+                       (pkt-data (get-bytevector-n port capt-len)))
+                  (if (eof-object? pkt-data)
+                      (reverse packets)
+                      (loop (cons (cons ts-sec pkt-data) packets))))))))
+      (close-port port))))
 
 ;; ── Display ────────────────────────────────────────────────────────────────
 
@@ -136,7 +136,7 @@
                                      ((#x86DD) "IPv6")
                                      (else (str "0x" (format "~4,'0x" etype))))))
                          (hash-put! proto-count proto
-                                   (+ 1 (hash-get proto-count proto 0))))))))))
+                                   (+ 1 (or (hash-get proto-count proto) 0))))))))))
        (let ((sorted (sort (hash->list proto-count)
                           (lambda (a b) (> (cdr a) (cdr b))))))
          (for ((entry sorted))
