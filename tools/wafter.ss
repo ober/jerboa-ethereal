@@ -12,7 +12,8 @@
                 partition
                 make-date make-time
                 meta atom?)
-        (jerboa prelude))
+        (jerboa prelude)
+        (std pcap))
 
 (def wafter-version "0.7.0")
 
@@ -74,17 +75,25 @@
   (displayln "")
   (displayln "Usage:")
   (displayln "  ./wafter-musl <pcap-file> <command>")
+  (displayln "  ./wafter-musl capture <iface> [N]    (live capture)")
+  (displayln "  ./wafter-musl interfaces              (list interfaces)")
   (displayln "  scheme wafter.ss <pcap-file> <command>")
   (displayln "")
-  (displayln "Commands:")
+  (displayln "Commands (pcap file):")
   (displayln "  stats       - Show packet statistics")
   (displayln "  list N      - List first N packets with protocol info")
   (displayln "  protocols   - Count packets by EtherType")
   (displayln "  --version   - Show version")
   (displayln "")
+  (displayln "Commands (live capture — requires root/CAP_NET_RAW):")
+  (displayln "  capture <iface> [N]  - Capture N live packets (default: 20)")
+  (displayln "  interfaces           - List available network interfaces")
+  (displayln "")
   (displayln "Example:")
   (displayln "  ./wafter-musl capture.pcap stats")
   (displayln "  ./wafter-musl capture.pcap list 20")
+  (displayln "  sudo ./wafter-musl capture eth0 50")
+  (displayln "  ./wafter-musl interfaces")
   (displayln "")
   (displayln "Supported protocols:")
   (displayln "  Layer 2: Ethernet, ARP")
@@ -96,12 +105,67 @@
 
 ;; ── Main ────────────────────────────────────────────────────────────────
 
+;; ── Live capture ────────────────────────────────────────────────────────────
+
+(def (wafter-list-interfaces)
+  (if (pcap-available?)
+      (let ((ifaces (pcap-interfaces)))
+        (displayln "Network interfaces:")
+        (for ((iface ifaces))
+          (displayln (str "  " iface))))
+      (displayln "Live capture not available (libjerboa_native not loaded)")))
+
+(def (wafter-live-capture args)
+  ;; args = ("capture" iface [count])
+  (if (not (pcap-available?))
+      (displayln "Live capture not available (libjerboa_native not loaded)")
+      (let* ((iface (cadr args))
+             (count (if (>= (length args) 3)
+                        (or (string->number (caddr args)) 20)
+                        20)))
+        (displayln (str "Capturing " count " packets on " iface
+                        " (requires root/CAP_NET_RAW)..."))
+        (displayln "")
+        (try
+          (let ((cap (pcap-open iface))
+                (n 0))
+            (unwind-protect
+              (let loop ()
+                (when (< n count)
+                  (let ((pkt (pcap-next cap)))
+                    (when pkt
+                      (let* ((data    (vector-ref pkt 0))
+                             (ts-sec  (vector-ref pkt 1))
+                             (ts-usec (vector-ref pkt 2))
+                             (len     (bytevector-length data))
+                             (etype   (if (>= len 14)
+                                         (let ((r (read-u16be data 12)))
+                                           (if (ok? r) (unwrap r) 0))
+                                         0))
+                             (proto   (case etype
+                                        ((#x0800) "IPv4")
+                                        ((#x0806) "ARP")
+                                        ((#x86DD) "IPv6")
+                                        (else (str "0x" (format "~4,'0x" etype))))))
+                        (printf "  ~a.~6,'0d  ~5d bytes  ~a\n"
+                                ts-sec ts-usec len proto)
+                        (set! n (+ n 1))
+                        (loop))))))
+              (pcap-close cap))
+            (displayln (str "\nCaptured " n " packet(s).")))
+          (catch (e)
+            (displayln (str "Capture error: " e)))))))
+
 ;; wafter-main is called by the C entry point in the static binary
 (def (wafter-main)
   (let ((args (command-line-arguments)))
     (cond
       ((and (= (length args) 1) (string=? (car args) "--version"))
        (show-version))
+      ((and (= (length args) 1) (string=? (car args) "interfaces"))
+       (wafter-list-interfaces))
+      ((and (>= (length args) 2) (string=? (car args) "capture"))
+       (wafter-live-capture args))
       ((< (length args) 2)
        (show-help))
       (else
