@@ -1,312 +1,279 @@
 #!chezscheme
 ;; build-wafter-musl.ss — Build wafter as a fully static musl binary
 ;;
-;; NOTE: This is a Chez Scheme script, not a Jerboa .ss file.
-;; Build scripts are exempt from JERBOA_ONLY.md because they orchestrate
-;; compilation and run in stock Chez. See JERBOA_ONLY.md for details.
+;; Follows the same approach as jerboa-gitsafe/build-gitsafe-musl.ss:
+;;   1. Compile all modules with STOCK Chez (optimize-level 3, WPO)
+;;   2. Whole-program optimization → wafter-all.so
+;;   3. Create wafter.boot from individual module .so files
+;;   4. Embed boot files + program as C byte arrays
+;;   5. Link with musl-gcc -static
 ;;
 ;; Usage:
 ;;   JERBOA_HOME=~/mine/jerboa make linux-local
-;;   (or: scheme --libdirs lib:$JERBOA_HOME/lib --script build-wafter-musl.ss)
 ;;
 ;; Prerequisites:
 ;;   - musl-gcc: sudo apt install musl-tools
-;;   - musl-built Chez: configured with CC=musl-gcc --static
-;;     at ~/chez-musl (or JERBOA_MUSL_CHEZ_PREFIX)
-;;   - Jerboa: at JERBOA_HOME (default ~/mine/jerboa)
+;;   - musl-built Chez at ~/chez-musl (or set JERBOA_MUSL_CHEZ_PREFIX)
+;;     build with: ./configure --threads --static CC=musl-gcc
 
 (import (chezscheme))
 
-;; ── Configuration ─────────────────────────────────────────────────────────
+;; ── Helper: embed binary file as C byte array ─────────────────────────────
 
-(define project-dir
-  (let ((d (getenv "PWD")))
-    (or d (current-directory))))
+(define (file->c-header input-path output-path array-name size-name)
+  (let* ([port (open-file-input-port input-path)]
+         [data (get-bytevector-all port)]
+         [size (bytevector-length data)])
+    (close-port port)
+    (call-with-output-file output-path
+      (lambda (out)
+        (fprintf out "/* Auto-generated — do not edit */\n")
+        (fprintf out "static const unsigned char ~a[] = {\n" array-name)
+        (let loop ([i 0])
+          (when (< i size)
+            (when (= 0 (modulo i 16)) (fprintf out "  "))
+            (fprintf out "0x~2,'0x" (bytevector-u8-ref data i))
+            (when (< (+ i 1) size) (fprintf out ","))
+            (when (= 15 (modulo i 16)) (fprintf out "\n"))
+            (loop (+ i 1))))
+        (fprintf out "\n};\n")
+        (fprintf out "static const unsigned int ~a = ~a;\n" size-name size))
+      'replace)
+    (printf "  ~a: ~a bytes\n" output-path size)))
 
-(define jerboa-home
-  (or (getenv "JERBOA_HOME")
-      (string-append (getenv "HOME") "/mine/jerboa")))
+;; ── Locate musl Chez ──────────────────────────────────────────────────────
 
 (define musl-chez-prefix
   (or (getenv "JERBOA_MUSL_CHEZ_PREFIX")
-      (string-append (getenv "HOME") "/chez-musl")))
+      (let* ([home (getenv "HOME")]
+             [p (format "~a/chez-musl" home)])
+        (and (file-exists? p) p))))
 
-(define musl-chez-scheme
-  (string-append musl-chez-prefix "/bin/scheme"))
-
-(define output-binary "wafter-musl")
-(define output-hash   "wafter-musl.sha256")
-(define c-entry-point "wafter-main.c")
-
-;; All source modules to compile, in dependency order
-(define source-modules
-  '(;; Core helpers (must come first)
-    "lib/dissector/protocol.ss"
-    "lib/dissector/registry.ss"
-    ;; Dissectors (no inter-dependencies)
-    "dissectors/ethernet.ss"
-    "dissectors/arp.ss"
-    "dissectors/ipv4.ss"
-    "dissectors/ipv6.ss"
-    "dissectors/icmp.ss"
-    "dissectors/icmpv6.ss"
-    "dissectors/igmp.ss"
-    "dissectors/tcp.ss"
-    "dissectors/udp.ss"
-    "dissectors/dns.ss"
-    "dissectors/dhcp.ss"
-    "dissectors/ntp.ss"
-    "dissectors/ssh.ss"
-    ;; Higher-level libraries
-    "lib/dissector/pipeline.ss"
-    "lib/dissector/flows.ss"
-    "lib/dissector/statistics.ss"
-    "lib/dissector/manifest.ss"
-    "lib/dissector/loader.ss"
-    ;; Main CLI tool
-    "tools/wafter.ss"))
-
-;; ── Logging ───────────────────────────────────────────────────────────────
-
-(define (log msg)
-  (display msg) (newline) (flush-output-port (current-output-port)))
-
-(define (log-step n total msg)
-  (log (format "[~a/~a] ~a" n total msg)))
-
-(define (log-ok msg)
-  (log (string-append "  ✓ " msg)))
-
-(define (log-err msg)
-  (display (string-append "  ✗ " msg) (current-error-port))
-  (newline (current-error-port)))
-
-(define (die msg)
-  (log-err msg)
+(unless musl-chez-prefix
+  (display "Error: Cannot find musl Chez install.\n")
+  (display "  Set JERBOA_MUSL_CHEZ_PREFIX or install to ~/chez-musl\n")
   (exit 1))
 
-;; ── Step 1: Prerequisites ─────────────────────────────────────────────────
+(define (find-csv-dir lib-dir mt)
+  (let ([csv-dir
+          (let lp ([dirs (guard (e [#t '()]) (directory-list lib-dir))])
+            (cond
+              [(null? dirs) #f]
+              [(and (> (string-length (car dirs)) 3)
+                    (string=? "csv" (substring (car dirs) 0 3)))
+               (format "~a/~a/~a" lib-dir (car dirs) mt)]
+              [else (lp (cdr dirs))]))])
+    (and csv-dir
+         (file-exists? (format "~a/main.o" csv-dir))
+         csv-dir)))
 
-(define (check-prerequisites)
-  (log-step 1 6 "Checking prerequisites")
-  (newline)
+(define musl-chez-dir
+  (let ([mt (symbol->string (machine-type))])
+    (or (find-csv-dir (format "~a/lib" musl-chez-prefix) mt)
+        (begin
+          (printf "Error: Cannot find Chez ~a dir under ~a/lib\n"
+                  (machine-type) musl-chez-prefix)
+          (printf "  Expected: ~a/lib/csv<version>/~a/main.o\n"
+                  musl-chez-prefix mt)
+          (exit 1)))))
 
-  ;; musl-gcc
-  (unless (zero? (system "command -v musl-gcc >/dev/null 2>&1"))
-    (die "musl-gcc not found. Install: sudo apt install musl-tools"))
-  (log-ok (string-append "musl-gcc: " (let-values ([(p) (open-process-ports "command -v musl-gcc" 'block (native-transcoder))])
-                                        (let ([line (get-line (car p))]) line))))
+;; ── Locate Jerboa ─────────────────────────────────────────────────────────
 
-  ;; JERBOA_HOME
-  (unless (file-directory? jerboa-home)
-    (die (string-append "JERBOA_HOME not found: " jerboa-home)))
-  (log-ok (string-append "JERBOA_HOME: " jerboa-home))
+(define jerboa-dir
+  (or (getenv "JERBOA_HOME")
+      (let ([sibling (format "~a/../jerboa" (current-directory))])
+        (and (file-exists? sibling) sibling))
+      (begin
+        (display "Error: Cannot find Jerboa. Set JERBOA_HOME.\n")
+        (exit 1))))
 
-  ;; musl-built Chez
-  (unless (file-exists? musl-chez-scheme)
-    (die (string-append
-           "musl Chez not found at: " musl-chez-scheme "\n"
-           "  Build with: cd ~/chez-scheme && ./configure --threads --static CC=musl-gcc && make install DESTDIR=~/chez-musl\n"
-           "  Or set: JERBOA_MUSL_CHEZ_PREFIX")))
-  (log-ok (string-append "musl Chez: " musl-chez-scheme))
+(printf "\n════════════════════════════════════════════════════════════\n")
+(printf "wafter static binary build\n")
+(printf "════════════════════════════════════════════════════════════\n")
+(printf "  Project:     ~a\n" (current-directory))
+(printf "  Jerboa:      ~a\n" jerboa-dir)
+(printf "  musl Chez:   ~a\n" musl-chez-dir)
+(printf "  Machine:     ~a\n" (machine-type))
+(newline)
 
-  (newline))
+;; ── Set up library directories ────────────────────────────────────────────
 
-;; ── Step 2: Compile Modules ───────────────────────────────────────────────
+(library-directories
+  (append
+    (list (cons (current-directory) (current-directory))
+          (cons (format "~a/lib" (current-directory))
+                (format "~a/lib" (current-directory)))
+          (cons (format "~a/lib" jerboa-dir)
+                (format "~a/lib" jerboa-dir)))
+    (library-directories)))
 
-(define (so-path ss-path)
-  "Derive .so path from .ss path"
-  (string-append (path-root ss-path) ".so"))
+;; ── Step 1: Compile all modules (stock Chez, optimize-level 3, WPO) ──────
 
-(define (wpo-path ss-path)
-  "Derive .wpo path from .ss path"
-  (string-append (path-root ss-path) ".wpo"))
+(printf "[1/6] Compiling all modules (optimize-level 3, WPO)...\n")
+(parameterize ([compile-imported-libraries         #t]
+               [optimize-level                     3]
+               [cp0-effort-limit                   500]
+               [cp0-score-limit                    50]
+               [cp0-outer-unroll-limit              1]
+               [commonization-level                 4]
+               [enable-unsafe-application          #t]
+               [enable-unsafe-variable-reference   #t]
+               [enable-arithmetic-left-associative #t]
+               [debug-level                         0]
+               [generate-inspector-information     #f]
+               [generate-wpo-files                 #t])
+  (compile-program "tools/wafter.ss"))
+(printf "  ✓ Compilation complete\n\n")
 
-(define (compile-module ss-path)
-  "Compile a single .ss module to .so using musl Chez"
-  (let* ((libdirs (string-append project-dir "/lib:"
-                                 project-dir ":"
-                                 jerboa-home "/lib"))
-         (cmd (format "~a -q --libdirs ~a --optimize-level 3 --compile-imported-libraries \
-                       --eval \"(compile-file \\\"~a\\\")\" --eval \"(exit)\" 2>&1"
-                      musl-chez-scheme libdirs ss-path)))
-    (let ((result (system cmd)))
-      (if (zero? result)
-          (begin (log-ok ss-path) #t)
-          (begin (log-err (string-append "FAILED: " ss-path)) #f)))))
+;; ── Step 2: Whole-program optimization ───────────────────────────────────
 
-(define (compile-modules)
-  (log-step 2 6 "Compiling modules with musl Chez")
-  (newline)
-  (log (string-append "  Compiling " (number->string (length source-modules)) " modules..."))
-  (newline)
+(printf "[2/6] Running whole-program optimization...\n")
+(let ([missing (compile-whole-program "tools/wafter.wpo" "wafter-all.so")])
+  (unless (null? missing)
+    (printf "  WPO: ~a libraries not incorporated (missing .wpo):\n" (length missing))
+    (for-each (lambda (lib) (printf "    ~a\n" lib)) missing)))
+(printf "  ✓ WPO complete\n\n")
 
-  (let* ((results (map compile-module source-modules))
-         (n-ok    (length (filter (lambda (x) x) results)))
-         (n-fail  (length (filter (lambda (x) (not x)) results))))
-    (newline)
-    (if (> n-fail 0)
-        (die (format "~a module(s) failed to compile" n-fail))
-        (log-ok (format "All ~a modules compiled" n-ok))))
-  (newline))
+;; ── Step 3: Create boot file + C headers ─────────────────────────────────
 
-;; ── Step 3: Generate C Entry Point ────────────────────────────────────────
+(printf "[3/6] Creating boot file and C headers...\n")
 
-(define (boot-files-for-chez)
-  "Find petite.boot and scheme.boot for musl Chez"
-  (let* ((boot-dir (string-append musl-chez-prefix "/lib/csv" (scheme-version) "/a6le")))
-    (list (string-append boot-dir "/petite.boot")
-          (string-append boot-dir "/scheme.boot"))))
+;; Library modules (compiled by step 1 via compile-imported-libraries)
+(define wafter-lib-modules
+  '("lib/dissector/protocol"
+    "lib/dissector/registry"
+    "dissectors/ethernet"
+    "dissectors/arp"
+    "dissectors/ipv4"
+    "dissectors/ipv6"
+    "dissectors/icmp"
+    "dissectors/icmpv6"
+    "dissectors/igmp"
+    "dissectors/tcp"
+    "dissectors/udp"
+    "dissectors/dns"
+    "dissectors/dhcp"
+    "dissectors/ntp"
+    "dissectors/ssh"
+    "lib/dissector/pipeline"
+    "lib/dissector/flows"
+    "lib/dissector/statistics"
+    "lib/dissector/manifest"
+    "lib/dissector/loader"))
 
-(define (so-files-for-wpo)
-  "List of compiled .wpo files to link"
-  (filter file-exists?
-          (map wpo-path source-modules)))
+(define (so-file m) (format "~a.so" m))
 
-(define (generate-c-entry-point)
-  (log-step 3 6 "Generating C entry point")
-  (newline)
+(define existing-lib-sos
+  (filter file-exists? (map so-file wafter-lib-modules)))
 
-  (let* ((boot-files (boot-files-for-chez))
-         (wpo-files  (so-files-for-wpo))
-         (wpo-registrations
-           (apply string-append
-                  (map (lambda (f)
-                         (format "  Sregister_boot_file(\"~a\");\n" f))
-                       wpo-files)))
-         (boot-registrations
-           (apply string-append
-                  (map (lambda (f)
-                         (format "  Sregister_boot_file(\"~a\");\n" f))
-                       boot-files)))
-         (c-source
-           (format
-             "/* wafter-main.c — Auto-generated by build-wafter-musl.ss */\n\
-#include <stdlib.h>\n\
-#include <string.h>\n\
-#include \"scheme.h\"\n\
-\n\
-static void custom_init(void) {\n\
-  /* Register compiled wafter modules */\n\
-~a\
-}\n\
-\n\
-int main(int argc, char **argv) {\n\
-  Sscheme_init(NULL);\n\
-\n\
-  /* Register Chez boot files */\n\
-~a\
-\n\
-  /* Build the heap */\n\
-  Sbuild_heap(NULL, custom_init);\n\
-\n\
-  /* Run wafter main */\n\
-  Scall1(Stop_level_value(Sstring_to_symbol(\"command-line-start\")),\n\
-         Sinteger(argc));\n\
-\n\
-  /* Set up argv for (command-line-arguments) */\n\
-  {\n\
-    ptr args = Snil;\n\
-    int i;\n\
-    for (i = argc - 1; i >= 1; i--)\n\
-      args = Scons(Sstring(argv[i]), args);\n\
-    Scall1(Stop_level_value(Sstring_to_symbol(\"command-line-arguments-set!\")), args);\n\
-  }\n\
-\n\
-  /* Invoke the top-level wafter entry point */\n\
-  Scall0(Stop_level_value(Sstring_to_symbol(\"wafter-main\")));\n\
-\n\
-  Sscheme_deinit();\n\
-  return 0;\n\
-}\n"
-             wpo-registrations
-             boot-registrations)))
-    (call-with-output-file c-entry-point
-      (lambda (port) (put-string port c-source))
-      'replace)
-    (log-ok (string-append "Generated " c-entry-point)))
-  (newline))
+(apply make-boot-file "wafter.boot" '("scheme" "petite") existing-lib-sos)
 
-;; ── Step 4: Link Static Binary ─────────────────────────────────────────────
+(file->c-header "wafter-all.so"
+                "wafter_program.h"
+                "wafter_program_data" "wafter_program_size")
+(file->c-header (format "~a/petite.boot" musl-chez-dir)
+                "wafter_petite_boot.h"
+                "petite_boot_data" "petite_boot_size")
+(file->c-header (format "~a/scheme.boot" musl-chez-dir)
+                "wafter_scheme_boot.h"
+                "scheme_boot_data" "scheme_boot_size")
+(file->c-header "wafter.boot"
+                "wafter_boot.h"
+                "wafter_boot_data" "wafter_boot_size")
+(printf "  ✓ Boot file and headers ready\n\n")
 
-(define (link-static-binary)
-  (log-step 4 6 "Linking static binary with musl-gcc")
-  (newline)
+;; ── Step 4: Generate C main ───────────────────────────────────────────────
 
-  (let* ((chez-include (string-append musl-chez-prefix "/include"))
-         (chez-lib     (string-append musl-chez-prefix "/lib"))
-         (wpo-files    (so-files-for-wpo))
-         (wpo-args     (apply string-append
-                              (map (lambda (f) (string-append " " f))
-                                   wpo-files)))
-         (cmd (format
-                "musl-gcc ~a ~a -o ~a -static \
-                 -I~a -L~a -lchez -lm -lpthread -ldl 2>&1"
-                c-entry-point
-                wpo-args
-                output-binary
-                chez-include
-                chez-lib)))
-    (log (string-append "  Running: " cmd))
-    (newline)
-    (let ((result (system cmd)))
-      (if (zero? result)
-          (log-ok (string-append "Linked: " output-binary))
-          (die "Linking failed"))))
-  (newline))
+(printf "[4/6] Generating C main...\n")
 
-;; ── Step 5: Strip Binary ───────────────────────────────────────────────────
+(call-with-output-file "wafter-main-musl.c"
+  (lambda (out)
+    (fprintf out "/* Auto-generated by build-wafter-musl.ss — do not edit */\n")
+    (fprintf out "#define _GNU_SOURCE\n")
+    (fprintf out "#include <stdlib.h>\n")
+    (fprintf out "#include <stdio.h>\n")
+    (fprintf out "#include <string.h>\n")
+    (fprintf out "#include <unistd.h>\n")
+    (fprintf out "#include \"scheme.h\"\n")
+    (fprintf out "#include \"wafter_petite_boot.h\"\n")
+    (fprintf out "#include \"wafter_scheme_boot.h\"\n")
+    (fprintf out "#include \"wafter_boot.h\"\n")
+    (fprintf out "#include \"wafter_program.h\"\n")
+    (fprintf out "\n")
+    (fprintf out "/* dlopen/dlsym stubs — no shared libraries in static binary */\n")
+    (fprintf out "void *dlopen(const char *f, int m) { (void)f; (void)m; return (void*)1; }\n")
+    (fprintf out "void *dlsym(void *h, const char *s) { (void)h; (void)s; return NULL; }\n")
+    (fprintf out "int dlclose(void *h) { (void)h; return 0; }\n")
+    (fprintf out "char *dlerror(void) { return \"static build\"; }\n")
+    (fprintf out "\n")
+    (fprintf out "int main(int argc, char *argv[]) {\n")
+    (fprintf out "  char prog_path[256];\n")
+    (fprintf out "  const char *tmpdir = getenv(\"TMPDIR\");\n")
+    (fprintf out "  if (!tmpdir) tmpdir = \"/tmp\";\n")
+    (display  "  snprintf(prog_path, sizeof(prog_path), \"%s/wafter-XXXXXX\", tmpdir);\n" out)
+    (fprintf out "  int fd = mkstemp(prog_path);\n")
+    (fprintf out "  if (fd < 0) { perror(\"mkstemp\"); return 1; }\n")
+    (fprintf out "  if (write(fd, wafter_program_data, wafter_program_size)\n")
+    (fprintf out "      != (ssize_t)wafter_program_size) {\n")
+    (fprintf out "    perror(\"write\"); close(fd); unlink(prog_path); return 1;\n")
+    (fprintf out "  }\n")
+    (fprintf out "  close(fd);\n")
+    (fprintf out "\n")
+    (fprintf out "  Sscheme_init(NULL);\n")
+    (fprintf out "  Sregister_boot_file_bytes(\"petite\", (void*)petite_boot_data, petite_boot_size);\n")
+    (fprintf out "  Sregister_boot_file_bytes(\"scheme\", (void*)scheme_boot_data, scheme_boot_size);\n")
+    (fprintf out "  Sregister_boot_file_bytes(\"wafter\", (void*)wafter_boot_data, wafter_boot_size);\n")
+    (fprintf out "  Sbuild_heap(NULL, NULL);\n")
+    (fprintf out "  int status = Sscheme_script(prog_path, argc, (const char **)argv);\n")
+    (fprintf out "  unlink(prog_path);\n")
+    (fprintf out "  Sscheme_deinit();\n")
+    (fprintf out "  return status;\n")
+    (fprintf out "}\n"))
+  'replace)
+(printf "  ✓ wafter-main-musl.c generated\n\n")
 
-(define (strip-binary)
-  (log-step 5 6 "Stripping binary")
-  (newline)
+;; ── Step 5: Compile and link with musl-gcc ────────────────────────────────
 
-  (let ((result (system (string-append "strip -s " output-binary))))
-    (if (zero? result)
-        (let* ((size-output (with-output-to-string
-                              (lambda () (system (string-append "ls -lh " output-binary " | awk '{print $5}' 2>/dev/null")))))
-               (size (string-trim size-output)))
-          (log-ok (string-append "Stripped: " output-binary " (" size ")"))
-          (log-ok "No debug symbols, no section headers"))
-        (die "strip failed")))
-  (newline))
+(printf "[5/6] Compiling and linking with musl-gcc (static)...\n")
 
-;; ── Step 6: Generate Checksum ──────────────────────────────────────────────
+(define link-libs "-lkernel -llz4 -lz -lm -ldl -lpthread")
 
-(define (generate-checksum)
-  (log-step 6 6 "Generating SHA256 checksum")
-  (newline)
+(let ([rc (system (format "musl-gcc -c -O2 -I~a -o wafter-main-musl.o wafter-main-musl.c"
+                          musl-chez-dir))])
+  (unless (= rc 0) (printf "Error: C compilation failed\n") (exit 1)))
 
-  (let ((result (system (string-append "sha256sum " output-binary " > " output-hash))))
-    (if (zero? result)
-        (log-ok (string-append "Checksum written to " output-hash))
-        (die "sha256sum failed")))
-  (newline))
+(let ([rc (system (format "musl-gcc -o wafter-musl wafter-main-musl.o -L~a ~a -static -Wl,--allow-multiple-definition"
+                          musl-chez-dir link-libs))])
+  (unless (= rc 0) (printf "Error: linking failed\n") (exit 1)))
 
-;; ── Main ──────────────────────────────────────────────────────────────────
+(printf "  Stripping binary...\n")
+(system "strip --strip-all wafter-musl")
+(system "sha256sum wafter-musl > wafter-musl.sha256")
+(printf "  ✓ Linked and stripped\n\n")
 
-(define (main args)
-  (newline)
-  (log "════════════════════════════════════════════════════════════")
-  (log "wafter static binary build")
-  (log "════════════════════════════════════════════════════════════")
-  (newline)
-  (log (string-append "  Project:     " project-dir))
-  (log (string-append "  JERBOA_HOME: " jerboa-home))
-  (log (string-append "  musl Chez:   " musl-chez-prefix))
-  (log (string-append "  Output:      " output-binary))
-  (newline)
+;; ── Step 6: Cleanup ───────────────────────────────────────────────────────
 
-  (check-prerequisites)
-  (compile-modules)
-  (generate-c-entry-point)
-  (link-static-binary)
-  (strip-binary)
-  (generate-checksum)
+(printf "[6/6] Cleaning up intermediate files...\n")
+(for-each (lambda (f) (when (file-exists? f) (delete-file f)))
+  '("wafter-main-musl.c" "wafter-main-musl.o"
+    "wafter_program.h" "wafter_petite_boot.h"
+    "wafter_scheme_boot.h" "wafter_boot.h"
+    "wafter-all.so" "wafter.boot"
+    "tools/wafter.wpo" "tools/wafter.so"))
 
-  (log "════════════════════════════════════════════════════════════")
-  (log (string-append "  ✓ " output-binary " — build complete"))
-  (log "════════════════════════════════════════════════════════════")
-  (newline))
+(for-each (lambda (m)
+            (for-each (lambda (ext)
+                        (let ([f (format "~a~a" m ext)])
+                          (when (file-exists? f) (delete-file f))))
+                      '(".so" ".wpo")))
+          wafter-lib-modules)
 
-(main (command-line))
+(printf "\n════════════════════════════════════════════════════════════\n")
+(printf "  ✓ wafter-musl — build complete\n")
+(printf "════════════════════════════════════════════════════════════\n")
+(printf "  Size:   ")
+(system "ls -lh wafter-musl | awk '{print $5}'")
+(printf "  SHA256: ")
+(system "cat wafter-musl.sha256")
+(printf "\n  Test:   ./wafter-musl --version\n")
+(printf "  Verify: file wafter-musl && ldd wafter-musl\n\n")

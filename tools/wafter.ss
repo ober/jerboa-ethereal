@@ -1,8 +1,17 @@
-#!/usr/bin/env scheme
+#!chezscheme
 ;; wafter - PCAP analyzer tool
 ;; Phase 7: Static binary, full protocol dissection
 
-(import (jerboa prelude))
+(import (except (chezscheme)
+                make-hash-table hash-table?
+                sort sort!
+                printf fprintf
+                path-extension path-absolute?
+                with-input-from-string with-output-to-string
+                iota 1+ 1-
+                partition
+                make-date make-time)
+        (jerboa prelude))
 
 (def wafter-version "0.7.0")
 

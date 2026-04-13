@@ -27,7 +27,7 @@ COPY . /build/mine/jerboa-ethereal
 
 # ── Build wafter-musl ────────────────────────────────────────────────────────
 WORKDIR /build/mine/jerboa-ethereal
-RUN JERBOA_HOME=/opt/jerboa make linux-local
+RUN make linux-local
 
 # ── Smoke test ───────────────────────────────────────────────────────────────
 RUN ./wafter-musl --version
