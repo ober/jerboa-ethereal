@@ -191,8 +191,8 @@
            (sbc-reassignblks-flags (unwrap (read-u8 buffer 24)))
            (sbc-reassignblocks-longlba (extract-bits sbc-reassignblks-flags 0x2 1))
            (sbc-reassignblocks-longlist (extract-bits sbc-reassignblks-flags 0x1 0))
-           (sbc-lba64-address (unwrap (read-u64be buffer 61)))
-           (sbc-alloclen16 (unwrap (read-u16be buffer 71)))
+           (sbc-lba64-address (unwrap (read-u64be buffer 24)))
+           (sbc-alloclen16 (unwrap (read-u16be buffer 34)))
            )
 
       (ok (list

@@ -115,9 +115,9 @@
            (client-address-ipv4 (unwrap (read-u32be buffer 6)))
            (client-address-ipv6 (unwrap (slice buffer 12 16)))
            (client-port-u16 (unwrap (read-u16be buffer 30)))
-           (display-number (unwrap (read-u16be buffer 58)))
-           (session-running (unwrap (read-u8 buffer 64)))
-           (session-id (unwrap (read-u32be buffer 64)))
+           (display-number (unwrap (read-u16be buffer 56)))
+           (session-running (unwrap (read-u8 buffer 62)))
+           (session-id (unwrap (read-u32be buffer 62)))
            )
 
       (ok (list

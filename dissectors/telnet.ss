@@ -111,7 +111,6 @@
   "Telnet"
   (try
     (let* (
-           (subcmd (unwrap (read-u8 buffer 0)))
            (string-subopt-value (unwrap (slice buffer 0 1)))
            (regime-cmd (unwrap (read-u8 buffer 0)))
            (regime-subopt-value (unwrap (slice buffer 0 1)))
@@ -143,11 +142,12 @@
            (vmware-vm-bios-uuid (unwrap (slice buffer 6 1)))
            (vmware-vm-location-uuid (unwrap (slice buffer 6 1)))
            (subcommand-data (unwrap (slice buffer 6 1)))
+           (option-data (unwrap (slice buffer 11 1)))
            (data (unwrap (slice buffer 12 1)))
+           (subcmd (unwrap (read-u8 buffer 13)))
            )
 
       (ok (list
-        (cons 'subcmd (list (cons 'raw subcmd) (cons 'formatted (number->string subcmd))))
         (cons 'string-subopt-value (list (cons 'raw string-subopt-value) (cons 'formatted (utf8->string string-subopt-value))))
         (cons 'regime-cmd (list (cons 'raw regime-cmd) (cons 'formatted (number->string regime-cmd))))
         (cons 'regime-subopt-value (list (cons 'raw regime-subopt-value) (cons 'formatted (utf8->string regime-subopt-value))))
@@ -179,7 +179,9 @@
         (cons 'vmware-vm-bios-uuid (list (cons 'raw vmware-vm-bios-uuid) (cons 'formatted (utf8->string vmware-vm-bios-uuid))))
         (cons 'vmware-vm-location-uuid (list (cons 'raw vmware-vm-location-uuid) (cons 'formatted (utf8->string vmware-vm-location-uuid))))
         (cons 'subcommand-data (list (cons 'raw subcommand-data) (cons 'formatted (fmt-bytes subcommand-data))))
+        (cons 'option-data (list (cons 'raw option-data) (cons 'formatted (fmt-bytes option-data))))
         (cons 'data (list (cons 'raw data) (cons 'formatted (utf8->string data))))
+        (cons 'subcmd (list (cons 'raw subcmd) (cons 'formatted (number->string subcmd))))
         )))
 
     (catch (e)

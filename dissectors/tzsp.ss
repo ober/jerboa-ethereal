@@ -114,10 +114,30 @@
   (try
     (let* (
            (version (unwrap (read-u8 buffer 0)))
+           (length (unwrap (read-u16be buffer 0)))
+           (name (unwrap (slice buffer 0 1)))
+           (location (unwrap (slice buffer 0 1)))
+           (info (unwrap (slice buffer 0 1)))
+           (id (unwrap (read-u32be buffer 0)))
+           (hf-signal (unwrap (read-u8 buffer 0)))
+           (hf-silence (unwrap (read-u8 buffer 0)))
+           (hf-time (unwrap (read-u32be buffer 0)))
+           (hf-sensormac (unwrap (slice buffer 0 6)))
+           (hf-unknown (unwrap (slice buffer 0 1)))
            )
 
       (ok (list
         (cons 'version (list (cons 'raw version) (cons 'formatted (number->string version))))
+        (cons 'length (list (cons 'raw length) (cons 'formatted (number->string length))))
+        (cons 'name (list (cons 'raw name) (cons 'formatted (utf8->string name))))
+        (cons 'location (list (cons 'raw location) (cons 'formatted (utf8->string location))))
+        (cons 'info (list (cons 'raw info) (cons 'formatted (utf8->string info))))
+        (cons 'id (list (cons 'raw id) (cons 'formatted (number->string id))))
+        (cons 'hf-signal (list (cons 'raw hf-signal) (cons 'formatted (number->string hf-signal))))
+        (cons 'hf-silence (list (cons 'raw hf-silence) (cons 'formatted (number->string hf-silence))))
+        (cons 'hf-time (list (cons 'raw hf-time) (cons 'formatted (fmt-hex hf-time))))
+        (cons 'hf-sensormac (list (cons 'raw hf-sensormac) (cons 'formatted (fmt-mac hf-sensormac))))
+        (cons 'hf-unknown (list (cons 'raw hf-unknown) (cons 'formatted (fmt-bytes hf-unknown))))
         )))
 
     (catch (e)

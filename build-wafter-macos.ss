@@ -1,22 +1,28 @@
 #!chezscheme
-;; build-wafter-musl.ss — Build wafter as a fully static musl binary
+;; build-wafter-macos.ss — Build wafter as a macOS binary
 ;;
-;; Follows the same approach as jerboa-gitsafe/build-gitsafe-musl.ss:
-;;   1. Compile all modules with STOCK Chez (optimize-level 3, WPO)
-;;   2. Whole-program optimization → wafter-all.so
-;;   3. Create wafter.boot from individual module .so files
-;;   4. Embed boot files + program as C byte arrays
-;;   5. Link with musl-gcc -static
+;; Produces a native macOS executable linked against the Chez Scheme
+;; runtime libraries (libkernel.a, liblz4.a, libz.a) from the Homebrew
+;; Chez install.  Not fully static (still links libSystem.dylib) but has
+;; no runtime dependency on an external Chez install.
 ;;
 ;; Usage:
-;;   JERBOA_HOME=~/mine/jerboa make linux-local
+;;   make macos           — auto-detects Homebrew Chez
+;;   CHEZ_DIR=<path> make macos   — override Chez lib dir
 ;;
 ;; Prerequisites:
-;;   - musl-gcc: sudo apt install musl-tools
-;;   - musl-built Chez at ~/chez-musl (or set JERBOA_MUSL_CHEZ_PREFIX)
-;;     build with: ./configure --threads --static CC=musl-gcc
+;;   - Chez Scheme via Homebrew:  brew install chezscheme
+;;   - Xcode Command Line Tools:  xcode-select --install
+;;   - Jerboa libraries available (sibling ../jerboa or JERBOA_HOME set)
 
 (import (chezscheme))
+
+;; ── String helpers (not available in base Chez) ───────────────────────────
+
+(define (string-starts-with? str prefix)
+  (let ([n (string-length prefix)])
+    (and (>= (string-length str) n)
+         (string=? (substring str 0 n) prefix))))
 
 ;; ── Helper: embed binary file as C byte array ─────────────────────────────
 
@@ -41,41 +47,38 @@
       'replace)
     (printf "  ~a: ~a bytes\n" output-path size)))
 
-;; ── Locate musl Chez ──────────────────────────────────────────────────────
+;; ── Locate Chez library directory ─────────────────────────────────────────
+;; Priority: CHEZ_DIR env → HOMEBREW_PREFIX → /opt/homebrew → /usr/local
 
-(define musl-chez-prefix
-  (or (getenv "JERBOA_MUSL_CHEZ_PREFIX")
-      (let* ([home (getenv "HOME")]
-             [p (format "~a/chez-musl" home)])
-        (and (file-exists? p) p))))
+(define (find-csv-dir base-lib mt)
+  "Find the csv<version>/<machine-type> directory under base-lib."
+  (let ([entries (guard (e [#t '()]) (directory-list base-lib))])
+    (let loop ([dirs entries])
+      (cond
+        [(null? dirs) #f]
+        [(and (string-starts-with? (car dirs) "csv")
+              (file-exists? (format "~a/~a/~a/scheme.h" base-lib (car dirs) mt)))
+         (format "~a/~a/~a" base-lib (car dirs) mt)]
+        [else (loop (cdr dirs))]))))
 
-(unless musl-chez-prefix
-  (display "Error: Cannot find musl Chez install.\n")
-  (display "  Set JERBOA_MUSL_CHEZ_PREFIX or install to ~/chez-musl\n")
-  (exit 1))
-
-(define (find-csv-dir lib-dir mt)
-  (let ([csv-dir
-          (let lp ([dirs (guard (e [#t '()]) (directory-list lib-dir))])
-            (cond
-              [(null? dirs) #f]
-              [(and (> (string-length (car dirs)) 3)
-                    (string=? "csv" (substring (car dirs) 0 3)))
-               (format "~a/~a/~a" lib-dir (car dirs) mt)]
-              [else (lp (cdr dirs))]))])
-    (and csv-dir
-         (file-exists? (format "~a/main.o" csv-dir))
-         csv-dir)))
-
-(define musl-chez-dir
-  (let ([mt (symbol->string (machine-type))])
-    (or (find-csv-dir (format "~a/lib" musl-chez-prefix) mt)
-        (begin
-          (printf "Error: Cannot find Chez ~a dir under ~a/lib\n"
-                  (machine-type) musl-chez-prefix)
-          (printf "  Expected: ~a/lib/csv<version>/~a/main.o\n"
-                  musl-chez-prefix mt)
-          (exit 1)))))
+(define chez-dir
+  (let* ([mt  (symbol->string (machine-type))]
+         [env (getenv "CHEZ_DIR")]
+         [homebrew-prefix (or (getenv "HOMEBREW_PREFIX")
+                              (and (file-exists? "/opt/homebrew/bin/scheme") "/opt/homebrew")
+                              "/usr/local")])
+    (or
+     ;; 1. Explicit override
+     (and env (file-exists? (format "~a/scheme.h" env)) env)
+     ;; 2. Homebrew csv dir
+     (find-csv-dir (format "~a/lib" homebrew-prefix) mt)
+     ;; 3. System-wide csv dir
+     (find-csv-dir "/usr/local/lib" mt)
+     (begin
+       (printf "Error: Cannot find Chez Scheme library directory.\n")
+       (printf "  Install via: brew install chezscheme\n")
+       (printf "  Or set CHEZ_DIR to the directory containing scheme.h\n")
+       (exit 1)))))
 
 ;; ── Locate Jerboa ─────────────────────────────────────────────────────────
 
@@ -88,12 +91,12 @@
         (exit 1))))
 
 (printf "\n════════════════════════════════════════════════════════════\n")
-(printf "wafter static binary build\n")
+(printf "wafter macOS binary build\n")
 (printf "════════════════════════════════════════════════════════════\n")
-(printf "  Project:     ~a\n" (current-directory))
-(printf "  Jerboa:      ~a\n" jerboa-dir)
-(printf "  musl Chez:   ~a\n" musl-chez-dir)
-(printf "  Machine:     ~a\n" (machine-type))
+(printf "  Project:    ~a\n" (current-directory))
+(printf "  Jerboa:     ~a\n" jerboa-dir)
+(printf "  Chez dir:   ~a\n" chez-dir)
+(printf "  Machine:    ~a\n" (machine-type))
 (newline)
 
 ;; ── Set up library directories ────────────────────────────────────────────
@@ -107,7 +110,7 @@
                 (format "~a/lib" jerboa-dir)))
     (library-directories)))
 
-;; ── Step 1: Compile all modules (stock Chez, optimize-level 3, WPO) ──────
+;; ── Step 1: Compile all modules (optimize-level 3, WPO) ───────────────────
 
 (printf "[1/6] Compiling all modules (optimize-level 3, WPO)...\n")
 (parameterize ([compile-imported-libraries         #t]
@@ -138,7 +141,6 @@
 
 (printf "[3/6] Creating boot file and C headers...\n")
 
-;; Library modules (compiled by step 1 via compile-imported-libraries)
 (define wafter-lib-modules
   '("lib/dissector/protocol"
     "lib/dissector/registry"
@@ -179,6 +181,7 @@
          "std/misc/string"
          "std/misc/thread"
          "std/os/path"
+         ;; prelude direct deps
          "jerboa/prelude"
          "jerboa/reader"
          "jerboa/ffi"
@@ -198,10 +201,10 @@
 (file->c-header "wafter-all.so"
                 "wafter_program.h"
                 "wafter_program_data" "wafter_program_size")
-(file->c-header (format "~a/petite.boot" musl-chez-dir)
+(file->c-header (format "~a/petite.boot" chez-dir)
                 "wafter_petite_boot.h"
                 "petite_boot_data" "petite_boot_size")
-(file->c-header (format "~a/scheme.boot" musl-chez-dir)
+(file->c-header (format "~a/scheme.boot" chez-dir)
                 "wafter_scheme_boot.h"
                 "scheme_boot_data" "scheme_boot_size")
 (file->c-header "wafter.boot"
@@ -213,10 +216,9 @@
 
 (printf "[4/6] Generating C main...\n")
 
-(call-with-output-file "wafter-main-musl.c"
+(call-with-output-file "wafter-main-macos.c"
   (lambda (out)
-    (fprintf out "/* Auto-generated by build-wafter-musl.ss — do not edit */\n")
-    (fprintf out "#define _GNU_SOURCE\n")
+    (fprintf out "/* Auto-generated by build-wafter-macos.ss — do not edit */\n")
     (fprintf out "#include <stdlib.h>\n")
     (fprintf out "#include <stdio.h>\n")
     (fprintf out "#include <string.h>\n")
@@ -227,17 +229,8 @@
     (fprintf out "#include \"wafter_boot.h\"\n")
     (fprintf out "#include \"wafter_program.h\"\n")
     (fprintf out "\n")
-    (fprintf out "/* dlopen/dlsym stubs — no shared libraries in static binary */\n")
-    (fprintf out "void *dlopen(const char *f, int m) { (void)f; (void)m; return (void*)1; }\n")
-    (fprintf out "void *dlsym(void *h, const char *s) { (void)h; (void)s; return NULL; }\n")
-    (fprintf out "int dlclose(void *h) { (void)h; return 0; }\n")
-    (fprintf out "char *dlerror(void) { return \"static build\"; }\n")
-    (fprintf out "\n")
     (fprintf out "int main(int argc, char *argv[]) {\n")
-    (fprintf out "  char prog_path[256];\n")
-    (fprintf out "  const char *tmpdir = getenv(\"TMPDIR\");\n")
-    (fprintf out "  if (!tmpdir) tmpdir = \"/tmp\";\n")
-    (display  "  snprintf(prog_path, sizeof(prog_path), \"%s/wafter-XXXXXX\", tmpdir);\n" out)
+    (fprintf out "  char prog_path[] = \"/tmp/wafter-XXXXXX\";\n")
     (fprintf out "  int fd = mkstemp(prog_path);\n")
     (fprintf out "  if (fd < 0) { perror(\"mkstemp\"); return 1; }\n")
     (fprintf out "  if (write(fd, wafter_program_data, wafter_program_size)\n")
@@ -257,32 +250,32 @@
     (fprintf out "  return status;\n")
     (fprintf out "}\n"))
   'replace)
-(printf "  ✓ wafter-main-musl.c generated\n\n")
+(printf "  ✓ wafter-main-macos.c generated\n\n")
 
-;; ── Step 5: Compile and link with musl-gcc ────────────────────────────────
+;; ── Step 5: Compile and link with cc ─────────────────────────────────────
 
-(printf "[5/6] Compiling and linking with musl-gcc (static)...\n")
+(printf "[5/6] Compiling and linking with cc...\n")
 
-(define link-libs "-lkernel -llz4 -lz -lm -ldl -lpthread")
-
-(let ([rc (system (format "musl-gcc -c -O2 -I~a -o wafter-main-musl.o wafter-main-musl.c"
-                          musl-chez-dir))])
+(let ([rc (system (format "cc -c -O2 -I~a -o wafter-main-macos.o wafter-main-macos.c"
+                          chez-dir))])
   (unless (= rc 0) (printf "Error: C compilation failed\n") (exit 1)))
 
-(let ([rc (system (format "musl-gcc -o wafter-musl wafter-main-musl.o -L~a ~a -static -Wl,--allow-multiple-definition"
-                          musl-chez-dir link-libs))])
+;; Link: libkernel.a + liblz4.a + libz.a from Chez install, plus system libs
+;; macOS needs -lncurses (expeditor/terminal) and -liconv (character encoding)
+(let ([rc (system (format "cc -o wafter-macos wafter-main-macos.o ~a/libkernel.a ~a/liblz4.a ~a/libz.a -lm -lpthread -ldl -lncurses -liconv"
+                          chez-dir chez-dir chez-dir))])
   (unless (= rc 0) (printf "Error: linking failed\n") (exit 1)))
 
 (printf "  Stripping binary...\n")
-(system "strip --strip-all wafter-musl")
-(system "sha256sum wafter-musl > wafter-musl.sha256")
+(system "strip -x wafter-macos")
+(system "shasum -a 256 wafter-macos > wafter-macos.sha256")
 (printf "  ✓ Linked and stripped\n\n")
 
 ;; ── Step 6: Cleanup ───────────────────────────────────────────────────────
 
 (printf "[6/6] Cleaning up intermediate files...\n")
 (for-each (lambda (f) (when (file-exists? f) (delete-file f)))
-  '("wafter-main-musl.c" "wafter-main-musl.o"
+  '("wafter-main-macos.c" "wafter-main-macos.o"
     "wafter_program.h" "wafter_petite_boot.h"
     "wafter_scheme_boot.h" "wafter_boot.h"
     "wafter-all.so" "wafter.boot"
@@ -296,11 +289,11 @@
           wafter-lib-modules)
 
 (printf "\n════════════════════════════════════════════════════════════\n")
-(printf "  ✓ wafter-musl — build complete\n")
+(printf "  ✓ wafter-macos — build complete\n")
 (printf "════════════════════════════════════════════════════════════\n")
 (printf "  Size:   ")
-(system "ls -lh wafter-musl | awk '{print $5}'")
+(system "ls -lh wafter-macos | awk '{print $5}'")
 (printf "  SHA256: ")
-(system "cat wafter-musl.sha256")
-(printf "\n  Test:   ./wafter-musl --version\n")
-(printf "  Verify: file wafter-musl && ldd wafter-musl\n\n")
+(system "cat wafter-macos.sha256")
+(printf "\n  Test:   ./wafter-macos --version\n")
+(printf "  Verify: file wafter-macos && otool -L wafter-macos\n\n")

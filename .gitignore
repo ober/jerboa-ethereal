@@ -1,5 +1,7 @@
 wafter-musl
 wafter-musl.sha256
+wafter-macos
+wafter-macos.sha256
 qt/tcp_repl_shim.so
 qt/libqt_shim.so
 /tmp/wafter-snap.png

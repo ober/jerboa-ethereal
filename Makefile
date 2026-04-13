@@ -1,5 +1,6 @@
 .PHONY: build test clean help check linux linux-local docker verify-harden status \
-        qt-shim qt qt-offscreen qt-screenshot qt-repl
+        qt-shim qt qt-offscreen qt-screenshot qt-repl \
+        macos macos-local verify-harden-macos
 
 help:
 	@echo "jerboa-ethereal - PCAP packet analyzer"
@@ -24,6 +25,10 @@ help:
 	@echo "  make linux-local        - Build locally (requires musl-gcc)"
 	@echo "  make docker             - Docker build"
 	@echo "  make verify-harden      - Verify binary hardening"
+	@echo ""
+	@echo "macOS binary:"
+	@echo "  make macos              - Build macOS binary (requires brew install chezscheme)"
+	@echo "  make verify-harden-macos - Verify macOS binary"
 	@echo ""
 	@echo "Tools (TUI):"
 	@echo "  scheme wafter.ss <pcap> stats"
@@ -54,33 +59,57 @@ status:
 	@echo ""
 	@echo "Phase 7: Production Tools & Static Binary (In Progress)"
 	@echo "  Tasks:"
-	@echo "    - Static binary build (musl)"
-	@echo "    - Docker build system"
+	@echo "    ✓ Static binary build (musl/Linux)"
+	@echo "    ✓ macOS binary build"
+	@echo "    ✓ Docker build system"
+	@echo "    ✓ CI/CD integration"
 	@echo "    - Performance benchmarking"
-	@echo "    - CI/CD integration"
 	@echo ""
 	@echo "Code Statistics:"
-	@echo "  - Total protocols: 13"
-	@echo "  - Lines of Scheme: ~2500"
+	@echo "  - Dissectors ported from Wireshark: 1688"
+	@echo "  - Additional hand-written dissectors: 4"
 	@echo "  - Code reduction vs Wireshark: 75-90%"
 	@echo ""
 
+JERBOA_LIB_DEV ?= $(HOME)/mine/jerboa/lib
+
 build:
-	scheme --libdirs lib --script build.ss
+	scheme --libdirs lib:$(JERBOA_LIB_DEV) --script build.ss
 
 test:
-	scheme --libdirs lib --script test-runner.ss
+	scheme --libdirs lib:$(JERBOA_LIB_DEV) --script test-phase2.ss
 
 check:
 	@echo "Checking dissector DSL..."
-	scheme --libdirs lib --script check.ss
+	scheme --libdirs lib:$(JERBOA_LIB_DEV) --script check.ss
 
 clean:
 	find lib -name "*.so" -delete
 	find lib -name "*.wpo" -delete
 	find . -name "*~" -delete
 	rm -f wafter-musl wafter-musl.sha256
+	rm -f wafter-macos wafter-macos.sha256
 	rm -f qt/tcp_repl_shim.so qt/libqt_shim.so
+
+# ── macOS Binary Build ───────────────────────────────────────────────────────
+# Requires: Chez Scheme (brew install chezscheme) + Xcode Command Line Tools
+# Produces: ./wafter-macos (dynamically linked against libSystem.dylib only)
+
+# Build macOS binary locally (no Docker needed)
+macos: macos-local
+
+macos-local:
+	./build-wafter-macos.sh
+
+# Verify macOS binary
+verify-harden-macos: macos
+	@echo "=== macOS Binary Verification ==="
+	@file wafter-macos
+	@echo ""
+	@otool -L wafter-macos
+	@echo ""
+	@[ -f wafter-macos.sha256 ] && echo "  PASS: SHA256 hash exists" || echo "  FAIL: no hash"
+	@./wafter-macos --version >/dev/null 2>&1 && echo "  PASS: binary runs" || echo "  FAIL: doesn't run"
 
 # ── Static Binary Builds (Linux) ────────────────────────────────────────────
 # See docs/BUILD_STATIC.md for detailed documentation

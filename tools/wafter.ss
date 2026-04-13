@@ -10,7 +10,8 @@
                 with-input-from-string with-output-to-string
                 iota 1+ 1-
                 partition
-                make-date make-time)
+                make-date make-time
+                meta atom?)
         (jerboa prelude))
 
 (def wafter-version "0.7.0")

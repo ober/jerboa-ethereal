@@ -113,21 +113,21 @@
   "SGs Application Part (SGsAP)"
   (try
     (let* (
+           (mme-name (unwrap (slice buffer 0 1)))
+           (vlr-name (unwrap (slice buffer 0 1)))
+           (csri (unwrap (read-u8 buffer 0)))
+           (sel-cs-dmn-op (unwrap (slice buffer 0 1)))
            (unknown-msg (unwrap (read-u8 buffer 0)))
            (message-elements (unwrap (slice buffer 0 1)))
-           (mme-name (unwrap (slice buffer 15 1)))
-           (vlr-name (unwrap (slice buffer 16 1)))
-           (csri (unwrap (read-u8 buffer 16)))
-           (sel-cs-dmn-op (unwrap (slice buffer 16 1)))
            )
 
       (ok (list
-        (cons 'unknown-msg (list (cons 'raw unknown-msg) (cons 'formatted (fmt-hex unknown-msg))))
-        (cons 'message-elements (list (cons 'raw message-elements) (cons 'formatted (fmt-bytes message-elements))))
         (cons 'mme-name (list (cons 'raw mme-name) (cons 'formatted (utf8->string mme-name))))
         (cons 'vlr-name (list (cons 'raw vlr-name) (cons 'formatted (utf8->string vlr-name))))
         (cons 'csri (list (cons 'raw csri) (cons 'formatted (if (= csri 0) "False" "True"))))
         (cons 'sel-cs-dmn-op (list (cons 'raw sel-cs-dmn-op) (cons 'formatted (fmt-bytes sel-cs-dmn-op))))
+        (cons 'unknown-msg (list (cons 'raw unknown-msg) (cons 'formatted (fmt-hex unknown-msg))))
+        (cons 'message-elements (list (cons 'raw message-elements) (cons 'formatted (fmt-bytes message-elements))))
         )))
 
     (catch (e)

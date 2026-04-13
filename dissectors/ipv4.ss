@@ -82,8 +82,8 @@
            (ihl (extract-bits b0 #x0F 0))
 
            ;; Validate version and IHL
-           (unwrap (validate (= version 4) "Invalid IPv4 version")))
-           (unwrap (validate (>= ihl 5) "IHL too small")))
+           (-v1 (unwrap (validate (= version 4) "Invalid IPv4 version")))
+           (-v2 (unwrap (validate (>= ihl 5) "IHL too small")))
 
            ;; Byte 1: DSCP + ECN
            (b1-res (read-u8 buffer 1))
@@ -94,7 +94,7 @@
            ;; Bytes 2-3: Total length
            (tlen-res (read-u16be buffer 2))
            (total-length (unwrap tlen-res))
-           (unwrap (validate (>= total-length 20) "Packet too short")))
+           (-v3 (unwrap (validate (>= total-length 20) "Packet too short")))
 
            ;; Bytes 4-5: Identification
            (id-res (read-u16be buffer 4))
