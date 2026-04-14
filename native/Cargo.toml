@@ -1,0 +1,18 @@
+[package]
+name = "wafter-native"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "wafter_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+rscap = "0.3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -5,3 +5,6 @@ wafter-macos.sha256
 qt/tcp_repl_shim.so
 qt/libqt_shim.so
 /tmp/wafter-snap.png
+lib/libwafter_native.dylib
+lib/libwafter_native.so
+native/target/

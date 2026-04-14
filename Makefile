@@ -1,6 +1,7 @@
 .PHONY: build test clean help check linux linux-local docker verify-harden status \
         qt-shim qt qt-offscreen qt-screenshot qt-repl \
-        macos macos-local verify-harden-macos
+        macos macos-local verify-harden-macos \
+        native native-install
 
 help:
 	@echo "jerboa-ethereal - PCAP packet analyzer"
@@ -83,12 +84,31 @@ check:
 	@echo "Checking dissector DSL..."
 	scheme --libdirs lib:$(JERBOA_LIB_DEV) --script check.ss
 
+# ── Local Rust native library ─────────────────────────────────────────────
+# Builds native/src/{panic,pcap_capture}.rs → lib/libwafter_native.dylib (macOS)
+# or lib/libwafter_native.so (Linux).  Required for live capture commands.
+
+native:
+	@echo "=== Building wafter-native (Rust pcap library) ==="
+	cd native && cargo build --release
+	@echo "=== Installing to lib/ ==="
+	@if [ -f native/target/release/libwafter_native.dylib ]; then \
+	  cp native/target/release/libwafter_native.dylib lib/libwafter_native.dylib; \
+	  echo "  ✓ lib/libwafter_native.dylib"; \
+	elif [ -f native/target/release/libwafter_native.so ]; then \
+	  cp native/target/release/libwafter_native.so lib/libwafter_native.so; \
+	  echo "  ✓ lib/libwafter_native.so"; \
+	fi
+
+native-install: native
+
 clean:
 	find lib -name "*.so" -delete
 	find lib -name "*.wpo" -delete
 	find . -name "*~" -delete
 	rm -f wafter-musl wafter-musl.sha256
 	rm -f wafter-macos wafter-macos.sha256
+	rm -f lib/libwafter_native.dylib lib/libwafter_native.so
 	rm -f qt/tcp_repl_shim.so qt/libqt_shim.so
 
 # ── macOS Binary Build ───────────────────────────────────────────────────────
@@ -98,7 +118,7 @@ clean:
 # Build macOS binary locally (no Docker needed)
 macos: macos-local
 
-macos-local:
+macos-local: native
 	./build-wafter-macos.sh
 
 # Verify macOS binary
