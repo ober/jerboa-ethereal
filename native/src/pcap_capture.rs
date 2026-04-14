@@ -54,8 +54,11 @@ mod bpf {
     }
 
     // macOS userspace bpf_hdr uses timeval32 (two i32s), not full timeval.
-    // Total 20 bytes: tv_sec(4) + tv_usec(4) + caplen(4) + datalen(4) + hdrlen(2) + pad(2)
-    const BPF_HDR_LEN: usize = 20;
+    // The C struct is 20 bytes (sizeof includes trailing pad), but the kernel
+    // writes bh_hdrlen=18 — the actual data fields without trailing padding:
+    //   tv_sec(4) + tv_usec(4) + caplen(4) + datalen(4) + hdrlen(2) = 18 bytes
+    // We need at least 18 bytes to safely read all fields.
+    const BPF_HDR_LEN: usize = 18;
 
     // Per-thread read buffer, sized to bd_bufsize after open.
     thread_local! {
