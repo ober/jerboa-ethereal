@@ -13,23 +13,36 @@ use crate::panic::set_last_error;
 use rscap::{Interface, Sniffer};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// ── macOS BPF activation ──────────────────────────────────────────────────────
+// ── macOS BPF capture ────────────────────────────────────────────────────────
 //
-// rscap's activate() calls BIOCSETFNR which returns EINVAL on macOS.
-// Work around by calling BIOCSETF (the resetting variant) + BIOCIMMEDIATE
-// directly via ioctl on the sniffer's fd.
+// rscap has two macOS bugs we work around here:
+//
+//  1. activate() calls BIOCSETFNR which returns EINVAL on this macOS version.
+//     Fix: use BIOCSETF (the buffer-resetting variant) instead.
+//
+//  2. recv() uses readv() with a small first iovec (sizeof bpf_xhdr = 32 bytes).
+//     macOS BPF requires a single contiguous read buffer >= the BPF buffer size;
+//     a multi-iovec readv whose first element is tiny returns EINVAL.
+//     Additionally, macOS userspace uses bpf_hdr (with timeval32, 20 bytes) not
+//     bpf_xhdr (FreeBSD-only, 32 bytes), so rscap misparses the header anyway.
+//     Fix: use plain read() into a single 65536-byte buffer, then parse bpf_hdr.
 
 #[cfg(target_os = "macos")]
 mod macos_bpf {
+    use std::cell::RefCell;
     use std::io;
     use std::os::fd::AsRawFd;
 
     // ioctl numbers from <net/bpf.h>
-    const BIOCSETF: libc::c_ulong = 0x80104267; // set filter (resets buffer)
+    const BIOCSETF: libc::c_ulong = 0x80104267;     // set filter (resets buffer)
+    const BIOCSBLEN: libc::c_ulong = 0xc0044266;    // set buffer length
     const BIOCIMMEDIATE: libc::c_ulong = 0x80044270; // immediate mode
 
-    // Must match kernel struct bpf_program layout on 64-bit macOS:
-    //   u_int bf_len  (4 bytes) + 4-byte padding + struct bpf_insn* (8 bytes)
+    // BPF buffer size we request — must be >= what the kernel will return.
+    const BPF_BUF_SIZE: usize = 65536;
+
+    // struct bpf_program layout on macOS arm64:
+    //   bf_len (u32, 4 bytes) + _pad (u32, 4 bytes) + bf_insns* (8 bytes)
     #[repr(C)]
     struct BpfProgram {
         bf_len: u32,
@@ -46,11 +59,30 @@ mod macos_bpf {
         k: u32,
     }
 
-    /// Set accept-all filter on a Sniffer's BPF fd and enable immediate mode.
+    // macOS userspace bpf_hdr uses timeval32 (two i32s), not the full timeval.
+    // Layout (20 bytes total):
+    //   offset  0: tv_sec  (i32)
+    //   offset  4: tv_usec (i32)
+    //   offset  8: bh_caplen  (u32)
+    //   offset 12: bh_datalen (u32)
+    //   offset 16: bh_hdrlen  (u16)
+    //   offset 18: _pad       (u16)
+    const BPF_HDR_LEN: usize = 20;
+
+    // Per-thread read buffer — avoids a heap alloc on every recv call.
+    thread_local! {
+        static BPF_READ_BUF: RefCell<Vec<u8>> = RefCell::new(vec![0u8; BPF_BUF_SIZE]);
+    }
+
+    /// Set accept-all filter, configure buffer size, and enable immediate mode.
     pub fn activate(sniffer: &rscap::Sniffer) -> io::Result<()> {
         let fd = sniffer.as_raw_fd();
 
-        // BPF program: single RET instruction that returns entire packet
+        // Set BPF buffer to BPF_BUF_SIZE so our read buffer is always sufficient.
+        let mut buflen: libc::c_uint = BPF_BUF_SIZE as libc::c_uint;
+        unsafe { libc::ioctl(fd, BIOCSBLEN, &mut buflen as *mut libc::c_uint) };
+
+        // BPF accept-all program: single RET K=0xffffffff instruction.
         let mut insn = BpfInsn { code: 0x0006, jt: 0, jf: 0, k: 0xffff_ffff };
         let mut prog = BpfProgram { bf_len: 1, _pad: 0, bf_insns: &mut insn };
 
@@ -61,11 +93,53 @@ mod macos_bpf {
             return Err(io::Error::last_os_error());
         }
 
-        // Enable immediate mode: return each packet right away, don't buffer
+        // Immediate mode: deliver each packet to userspace right away.
         let mut imm: libc::c_uint = 1;
         unsafe { libc::ioctl(fd, BIOCIMMEDIATE, &mut imm as *mut libc::c_uint) };
 
         Ok(())
+    }
+
+    /// Receive one packet from the BPF fd using plain read() + bpf_hdr parsing.
+    ///
+    /// Bypasses rscap's recv() which uses readv() — incompatible with macOS BPF.
+    pub fn recv(sniffer: &rscap::Sniffer, out: &mut [u8]) -> io::Result<usize> {
+        let fd = sniffer.as_raw_fd();
+
+        BPF_READ_BUF.with(|cell| {
+            let mut buf = cell.borrow_mut();
+
+            // Single contiguous read — macOS BPF requires this.
+            let n = unsafe {
+                libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+            };
+            if n < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let n = n as usize;
+            if n < BPF_HDR_LEN {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "BPF read returned fewer bytes than bpf_hdr",
+                ));
+            }
+
+            // Parse bpf_hdr fields directly from the buffer bytes.
+            let caplen  = u32::from_ne_bytes(buf[8..12].try_into().unwrap()) as usize;
+            let hdrlen  = u16::from_ne_bytes(buf[16..18].try_into().unwrap()) as usize;
+
+            // Sanity check: hdrlen must be at least BPF_HDR_LEN and within buffer.
+            if hdrlen < BPF_HDR_LEN || hdrlen + caplen > n {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "BPF header/caplen out of range",
+                ));
+            }
+
+            let copy_len = caplen.min(out.len());
+            out[..copy_len].copy_from_slice(&buf[hdrlen..hdrlen + copy_len]);
+            Ok(copy_len)
+        })
     }
 }
 
@@ -143,7 +217,12 @@ pub extern "C" fn jerboa_pcap_next(
     let sniffer = unsafe { &mut *(handle as *mut Sniffer) };
     let out = unsafe { std::slice::from_raw_parts_mut(buf, buf_len) };
 
-    match sniffer.recv(out) {
+    #[cfg(target_os = "macos")]
+    let recv_result = macos_bpf::recv(sniffer, out);
+    #[cfg(not(target_os = "macos"))]
+    let recv_result = sniffer.recv(out);
+
+    match recv_result {
         Ok(n) => {
             let dur = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
