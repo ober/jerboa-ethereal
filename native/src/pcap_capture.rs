@@ -1,48 +1,42 @@
-//! pcap_capture.rs — Live packet capture FFI via rscap
+//! pcap_capture.rs — Live packet capture FFI
 //!
-//! Provides:
-//!   jerboa_pcap_open(iface, iface_len) -> i64    // returns handle or -1
-//!   jerboa_pcap_next(handle, buf, buf_len, ts_sec_out, ts_usec_out) -> i32  // bytes read or -1
-//!   jerboa_pcap_close(handle) -> i32
-//!   jerboa_pcap_list_interfaces(buf, buf_len) -> i32  // bytes written or -1
+//! On Linux: uses rscap (AF_PACKET sockets).
+//! On macOS: bypasses rscap entirely and drives /dev/bpf directly.
 //!
-//! The handle is a Box<rscap::Sniffer> cast to i64 (raw pointer).
-//! Scheme is responsible for calling jerboa_pcap_close exactly once per handle.
+//! Reason for macOS bypass:
+//!  - rscap's Sniffer::new() calls BIOCSETIF (bind) before we can call BIOCSBLEN.
+//!    macOS rejects BIOCSBLEN after bind, leaving bd_bufsize at the kernel default.
+//!    read() on a BPF fd requires a buffer >= bd_bufsize; if we don't know that size
+//!    we can't satisfy the requirement reliably.
+//!  - rscap's recv() uses readv() with a tiny first iovec; macOS BPF requires a
+//!    single contiguous read buffer.
+//!  - rscap parses bpf_xhdr (FreeBSD); macOS returns bpf_hdr (timeval32, 20 bytes).
+//!
+//! By opening /dev/bpf ourselves we can call BIOCSBLEN before BIOCSETIF, then
+//! use plain read() into a correctly-sized buffer.
 
 use crate::panic::set_last_error;
-use rscap::{Interface, Sniffer};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// ── macOS BPF capture ────────────────────────────────────────────────────────
-//
-// rscap has two macOS bugs we work around here:
-//
-//  1. activate() calls BIOCSETFNR which returns EINVAL on this macOS version.
-//     Fix: use BIOCSETF (the buffer-resetting variant) instead.
-//
-//  2. recv() uses readv() with a small first iovec (sizeof bpf_xhdr = 32 bytes).
-//     macOS BPF requires a single contiguous read buffer >= the BPF buffer size;
-//     a multi-iovec readv whose first element is tiny returns EINVAL.
-//     Additionally, macOS userspace uses bpf_hdr (with timeval32, 20 bytes) not
-//     bpf_xhdr (FreeBSD-only, 32 bytes), so rscap misparses the header anyway.
-//     Fix: use plain read() into a single 65536-byte buffer, then parse bpf_hdr.
+// ── macOS: full BPF implementation ───────────────────────────────────────────
 
 #[cfg(target_os = "macos")]
-mod macos_bpf {
+mod bpf {
     use std::cell::RefCell;
     use std::io;
-    use std::os::fd::AsRawFd;
 
     // ioctl numbers from <net/bpf.h>
-    const BIOCSETF: libc::c_ulong = 0x80104267;     // set filter (resets buffer)
-    const BIOCSBLEN: libc::c_ulong = 0xc0044266;    // set buffer length
-    const BIOCIMMEDIATE: libc::c_ulong = 0x80044270; // immediate mode
+    const BIOCGBLEN: libc::c_ulong    = 0x40044266; // get buffer length
+    const BIOCSBLEN: libc::c_ulong    = 0xc0044266; // set buffer length (BEFORE bind)
+    const BIOCSETF: libc::c_ulong     = 0x80104267; // set filter (resets buffer)
+    const BIOCSETIF: libc::c_ulong    = 0x8020426c; // bind to interface
+    const BIOCIMMEDIATE: libc::c_ulong = 0x80044270; // immediate delivery mode
 
-    // BPF buffer size we request — must be >= what the kernel will return.
-    const BPF_BUF_SIZE: usize = 65536;
+    // Requested BPF buffer size (kernel may round up/down).
+    const WANT_BUFSIZE: libc::c_uint = 65536;
 
-    // struct bpf_program layout on macOS arm64:
-    //   bf_len (u32, 4 bytes) + _pad (u32, 4 bytes) + bf_insns* (8 bytes)
+    // struct bpf_program on macOS arm64:
+    //   bf_len (u32) + _pad (u32) + bf_insns* (8 bytes) = 16 bytes
     #[repr(C)]
     struct BpfProgram {
         bf_len: u32,
@@ -59,94 +53,176 @@ mod macos_bpf {
         k: u32,
     }
 
-    // macOS userspace bpf_hdr uses timeval32 (two i32s), not the full timeval.
-    // Layout (20 bytes total):
-    //   offset  0: tv_sec  (i32)
-    //   offset  4: tv_usec (i32)
-    //   offset  8: bh_caplen  (u32)
-    //   offset 12: bh_datalen (u32)
-    //   offset 16: bh_hdrlen  (u16)
-    //   offset 18: _pad       (u16)
+    // macOS userspace bpf_hdr uses timeval32 (two i32s), not full timeval.
+    // Total 20 bytes: tv_sec(4) + tv_usec(4) + caplen(4) + datalen(4) + hdrlen(2) + pad(2)
     const BPF_HDR_LEN: usize = 20;
 
-    // Per-thread read buffer — avoids a heap alloc on every recv call.
+    // Per-thread read buffer, sized to bd_bufsize after open.
     thread_local! {
-        static BPF_READ_BUF: RefCell<Vec<u8>> = RefCell::new(vec![0u8; BPF_BUF_SIZE]);
+        static READ_BUF: RefCell<Vec<u8>> = RefCell::new(Vec::new());
     }
 
-    /// Set accept-all filter, configure buffer size, and enable immediate mode.
-    pub fn activate(sniffer: &rscap::Sniffer) -> io::Result<()> {
-        let fd = sniffer.as_raw_fd();
-
-        // Set BPF buffer to BPF_BUF_SIZE so our read buffer is always sufficient.
-        let mut buflen: libc::c_uint = BPF_BUF_SIZE as libc::c_uint;
-        unsafe { libc::ioctl(fd, BIOCSBLEN, &mut buflen as *mut libc::c_uint) };
-
-        // BPF accept-all program: single RET K=0xffffffff instruction.
-        let mut insn = BpfInsn { code: 0x0006, jt: 0, jf: 0, k: 0xffff_ffff };
-        let mut prog = BpfProgram { bf_len: 1, _pad: 0, bf_insns: &mut insn };
-
-        let rc = unsafe {
-            libc::ioctl(fd, BIOCSETF, &mut prog as *mut BpfProgram as *mut libc::c_void)
-        };
-        if rc < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        // Immediate mode: deliver each packet to userspace right away.
-        let mut imm: libc::c_uint = 1;
-        unsafe { libc::ioctl(fd, BIOCIMMEDIATE, &mut imm as *mut libc::c_uint) };
-
-        Ok(())
+    pub struct Capture {
+        fd: libc::c_int,
+        pub bufsize: usize,
     }
 
-    /// Receive one packet from the BPF fd using plain read() + bpf_hdr parsing.
-    ///
-    /// Bypasses rscap's recv() which uses readv() — incompatible with macOS BPF.
-    pub fn recv(sniffer: &rscap::Sniffer, out: &mut [u8]) -> io::Result<usize> {
-        let fd = sniffer.as_raw_fd();
+    impl Capture {
+        /// Open a live capture on `iface`, bypassing rscap.
+        pub fn open(iface: &str) -> io::Result<Self> {
+            // 1. Open first available /dev/bpf device.
+            let fd = Self::open_bpf()?;
 
-        BPF_READ_BUF.with(|cell| {
-            let mut buf = cell.borrow_mut();
+            // 2. BIOCSBLEN — MUST come before BIOCSETIF on macOS.
+            let mut want: libc::c_uint = WANT_BUFSIZE;
+            unsafe { libc::ioctl(fd, BIOCSBLEN, &mut want) };
 
-            // Single contiguous read — macOS BPF requires this.
-            let n = unsafe {
-                libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
-            };
-            if n < 0 {
+            // 3. Read back the actual buffer size the kernel granted.
+            let mut bufsize: libc::c_uint = 0;
+            unsafe { libc::ioctl(fd, BIOCGBLEN, &mut bufsize) };
+            let bufsize = bufsize as usize;
+
+            // 4. BIOCSETIF — bind to the network interface.
+            let mut ifreq = Self::make_ifreq(iface);
+            let rc = unsafe { libc::ioctl(fd, BIOCSETIF, &mut ifreq) };
+            if rc < 0 {
+                unsafe { libc::close(fd) };
                 return Err(io::Error::last_os_error());
             }
-            let n = n as usize;
-            if n < BPF_HDR_LEN {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "BPF read returned fewer bytes than bpf_hdr",
-                ));
+
+            // 5. BIOCSETF — accept-all filter (single RET K=0xffffffff).
+            let mut insn = BpfInsn { code: 0x0006, jt: 0, jf: 0, k: 0xffff_ffff };
+            let mut prog = BpfProgram { bf_len: 1, _pad: 0, bf_insns: &mut insn };
+            let rc = unsafe {
+                libc::ioctl(fd, BIOCSETF, &mut prog as *mut BpfProgram as *mut libc::c_void)
+            };
+            if rc < 0 {
+                unsafe { libc::close(fd) };
+                return Err(io::Error::last_os_error());
             }
 
-            // Parse bpf_hdr fields directly from the buffer bytes.
-            let caplen  = u32::from_ne_bytes(buf[8..12].try_into().unwrap()) as usize;
-            let hdrlen  = u16::from_ne_bytes(buf[16..18].try_into().unwrap()) as usize;
+            // 6. BIOCIMMEDIATE — return each packet immediately, don't buffer.
+            let mut imm: libc::c_uint = 1;
+            unsafe { libc::ioctl(fd, BIOCIMMEDIATE, &mut imm) };
 
-            // Sanity check: hdrlen must be at least BPF_HDR_LEN and within buffer.
-            if hdrlen < BPF_HDR_LEN || hdrlen + caplen > n {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "BPF header/caplen out of range",
-                ));
+            // Pre-size the thread-local read buffer.
+            READ_BUF.with(|cell| {
+                let mut buf = cell.borrow_mut();
+                if buf.len() < bufsize {
+                    buf.resize(bufsize, 0);
+                }
+            });
+
+            Ok(Capture { fd, bufsize })
+        }
+
+        /// Block until one packet arrives; copy it into `out`. Returns bytes written.
+        pub fn recv(&self, out: &mut [u8]) -> io::Result<usize> {
+            READ_BUF.with(|cell| {
+                let mut buf = cell.borrow_mut();
+
+                // Ensure buffer is large enough (it was sized at open time, but be safe).
+                if buf.len() < self.bufsize {
+                    buf.resize(self.bufsize, 0);
+                }
+
+                // Single contiguous read — macOS BPF requires buffer >= bd_bufsize.
+                let n = unsafe {
+                    libc::read(
+                        self.fd,
+                        buf.as_mut_ptr() as *mut libc::c_void,
+                        self.bufsize,
+                    )
+                };
+                if n < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let n = n as usize;
+
+                if n < BPF_HDR_LEN {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "BPF read returned fewer bytes than bpf_hdr",
+                    ));
+                }
+
+                // bpf_hdr layout (userspace / timeval32):
+                //   [0..4]  tv_sec  (i32)
+                //   [4..8]  tv_usec (i32)
+                //   [8..12] bh_caplen (u32)   ← packet bytes captured
+                //   [12..16] bh_datalen (u32) ← original packet length
+                //   [16..18] bh_hdrlen (u16)  ← total header length (incl. alignment)
+                let caplen = u32::from_ne_bytes(buf[8..12].try_into().unwrap()) as usize;
+                let hdrlen = u16::from_ne_bytes(buf[16..18].try_into().unwrap()) as usize;
+
+                if hdrlen < BPF_HDR_LEN || hdrlen + caplen > n {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("BPF header/caplen out of range: hdrlen={hdrlen} caplen={caplen} n={n}"),
+                    ));
+                }
+
+                let copy_len = caplen.min(out.len());
+                out[..copy_len].copy_from_slice(&buf[hdrlen..hdrlen + copy_len]);
+                Ok(copy_len)
+            })
+        }
+
+        // ── helpers ──────────────────────────────────────────────────────────
+
+        fn open_bpf() -> io::Result<libc::c_int> {
+            // Try /dev/bpf first, then /dev/bpf1 .. /dev/bpf99.
+            // Skip /dev/bpf0 — some tools hardcode it.
+            let paths: Vec<String> = std::iter::once("/dev/bpf".to_string())
+                .chain((1..100).map(|i| format!("/dev/bpf{}", i)))
+                .collect();
+
+            for path in &paths {
+                let cpath = std::ffi::CString::new(path.as_str()).unwrap();
+                let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDWR) };
+                if fd >= 0 {
+                    return Ok(fd);
+                }
+                let e = io::Error::last_os_error();
+                if e.raw_os_error() != Some(libc::EBUSY)
+                    && e.raw_os_error() != Some(libc::ENOENT)
+                {
+                    return Err(e);
+                }
             }
+            Err(io::Error::new(io::ErrorKind::NotFound, "no /dev/bpf device available"))
+        }
 
-            let copy_len = caplen.min(out.len());
-            out[..copy_len].copy_from_slice(&buf[hdrlen..hdrlen + copy_len]);
-            Ok(copy_len)
-        })
+        fn make_ifreq(iface: &str) -> libc::ifreq {
+            let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
+            let name_bytes = iface.as_bytes();
+            let copy_len = name_bytes.len().min(libc::IFNAMSIZ - 1);
+            for (i, &b) in name_bytes[..copy_len].iter().enumerate() {
+                req.ifr_name[i] = b as libc::c_char;
+            }
+            req
+        }
+    }
+
+    impl Drop for Capture {
+        fn drop(&mut self) {
+            unsafe { libc::close(self.fd) };
+        }
     }
 }
+
+// ── Handle type (platform-specific) ──────────────────────────────────────────
+
+#[cfg(target_os = "macos")]
+type CaptureHandle = bpf::Capture;
+
+#[cfg(not(target_os = "macos"))]
+type CaptureHandle = rscap::Sniffer;
 
 // ── Open ──────────────────────────────────────────────────────────────────────
 
 /// Open and activate a live capture on the named interface.
-/// Returns a handle (i64 > 0) on success, or -1 on error (check jerboa_last_error).
+/// Returns a handle (i64 > 0) on success, or -1 on error.
 #[no_mangle]
 pub extern "C" fn jerboa_pcap_open(iface_ptr: *const u8, iface_len: usize) -> i64 {
     if iface_ptr.is_null() {
@@ -162,41 +238,33 @@ pub extern "C" fn jerboa_pcap_open(iface_ptr: *const u8, iface_len: usize) -> i6
             }
         }
     };
-    let iface = match Interface::new(iface_str) {
-        Ok(i) => i,
-        Err(e) => {
-            set_last_error(format!("pcap_open: invalid interface '{iface_str}': {e}"));
-            return -1;
-        }
-    };
-    let sniffer = match Sniffer::new(iface) {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(format!("pcap_open: Sniffer::new failed: {e}"));
-            return -1;
-        }
-    };
 
-    // Activate: set accept-all filter and begin capturing
     #[cfg(target_os = "macos")]
-    let activate_result = macos_bpf::activate(&sniffer);
+    let result = bpf::Capture::open(iface_str);
+
     #[cfg(not(target_os = "macos"))]
-    let activate_result = sniffer.activate(None);
+    let result = {
+        use rscap::{Interface, Sniffer};
+        Interface::new(iface_str)
+            .map_err(|e| std::io::Error::other(format!("invalid interface '{iface_str}': {e}")))
+            .and_then(|iface| Sniffer::new(iface))
+            .and_then(|mut s| s.activate(None).map(|_| s))
+    };
 
-    if let Err(e) = activate_result {
-        set_last_error(format!("pcap_open: activate failed: {e}"));
-        return -1;
+    match result {
+        Ok(handle) => Box::into_raw(Box::new(handle)) as i64,
+        Err(e) => {
+            set_last_error(format!("pcap_open: {e}"));
+            -1
+        }
     }
-
-    Box::into_raw(Box::new(sniffer)) as i64
 }
 
 // ── Next packet ───────────────────────────────────────────────────────────────
 
 /// Receive the next packet into buf[0..buf_len].
-/// Writes arrival timestamp seconds  into *ts_sec_out  (if non-null).
-/// Writes arrival timestamp microseconds into *ts_usec_out (if non-null).
-/// Returns the number of bytes written on success, -1 on error.
+/// Writes arrival timestamp into *ts_sec_out / *ts_usec_out (if non-null).
+/// Returns bytes written on success, -1 on error.
 #[no_mangle]
 pub extern "C" fn jerboa_pcap_next(
     handle: i64,
@@ -213,16 +281,10 @@ pub extern "C" fn jerboa_pcap_next(
         set_last_error("null/empty output buffer".to_string());
         return -1;
     }
-    // Safety: handle was produced by Box::into_raw in jerboa_pcap_open
-    let sniffer = unsafe { &mut *(handle as *mut Sniffer) };
+    let cap = unsafe { &mut *(handle as *mut CaptureHandle) };
     let out = unsafe { std::slice::from_raw_parts_mut(buf, buf_len) };
 
-    #[cfg(target_os = "macos")]
-    let recv_result = macos_bpf::recv(sniffer, out);
-    #[cfg(not(target_os = "macos"))]
-    let recv_result = sniffer.recv(out);
-
-    match recv_result {
+    match cap.recv(out) {
         Ok(n) => {
             let dur = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -250,14 +312,13 @@ pub extern "C" fn jerboa_pcap_close(handle: i64) -> i32 {
     if handle <= 0 {
         return -1;
     }
-    // Safety: handle was produced by Box::into_raw in jerboa_pcap_open
-    let _ = unsafe { Box::from_raw(handle as *mut Sniffer) };
+    let _ = unsafe { Box::from_raw(handle as *mut CaptureHandle) };
     0
 }
 
 // ── List interfaces ───────────────────────────────────────────────────────────
 
-/// Write a newline-separated list of network interface names into buf (NUL-terminated).
+/// Write a newline-separated list of interface names into buf (NUL-terminated).
 /// Returns bytes written (excluding NUL), or -1 on error.
 #[no_mangle]
 pub extern "C" fn jerboa_pcap_list_interfaces(buf: *mut u8, buf_len: usize) -> i32 {
