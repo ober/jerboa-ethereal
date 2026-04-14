@@ -24,13 +24,6 @@
 
 ;; ── Dissection Helpers ─────────────────────────────────────────────────────
 
-(def (fmt-ipv4 addr)
-  (let ((b0 (bitwise-arithmetic-shift-right addr 24))
-        (b1 (bitwise-and (bitwise-arithmetic-shift-right addr 16) 255))
-        (b2 (bitwise-and (bitwise-arithmetic-shift-right addr 8) 255))
-        (b3 (bitwise-and addr 255)))
-    (str b0 "." b1 "." b2 "." b3)))
-
 (def (read-u8 buf offset)
   (if (>= offset (bytevector-length buf))
       (err "EOF")
@@ -105,6 +98,96 @@
 
 ;; ── Main ────────────────────────────────────────────────────────────────
 
+;; ── Inline packet description (multi-layer) ─────────────────────────────────
+
+(def (fmt-ipv4 addr)
+  (let ((b0 (bitwise-arithmetic-shift-right addr 24))
+        (b1 (bitwise-and (bitwise-arithmetic-shift-right addr 16) 255))
+        (b2 (bitwise-and (bitwise-arithmetic-shift-right addr 8) 255))
+        (b3 (bitwise-and addr 255)))
+    (str b0 "." b1 "." b2 "." b3)))
+
+(def (port->app port)
+  "Map well-known port to application name, or #f."
+  (case port
+    ((20 21)       "FTP")
+    ((22)          "SSH")
+    ((23)          "Telnet")
+    ((25 587 465)  "SMTP")
+    ((53)          "DNS")
+    ((67 68)       "DHCP")
+    ((80 8080)     "HTTP")
+    ((110)         "POP3")
+    ((123)         "NTP")
+    ((143)         "IMAP")
+    ((161 162)     "SNMP")
+    ((179)         "BGP")
+    ((443 8443)    "HTTPS")
+    ((514)         "Syslog")
+    ((587)         "SMTP")
+    ((993)         "IMAPS")
+    ((995)         "POP3S")
+    ((1194)        "OpenVPN")
+    ((1433)        "MSSQL")
+    ((3306)        "MySQL")
+    ((3389)        "RDP")
+    ((5432)        "PostgreSQL")
+    ((5900)        "VNC")
+    ((6379)        "Redis")
+    ((8883)        "MQTT")
+    ((9200 9300)   "Elasticsearch")
+    (else #f)))
+
+(def (app-label sport dport)
+  "Return \" [AppName]\" if either port is well-known, else \"\"."
+  (let ((app (or (port->app dport) (port->app sport))))
+    (if app (str " [" app "]") "")))
+
+(def (describe-transport data l4-off proto src-str dst-str)
+  "Format L4 layer: TCP/UDP with ports, ICMP, or proto number."
+  (case proto
+    ((6)                                       ; TCP
+     (if (< (bytevector-length data) (+ l4-off 4))
+         (str "IPv4/TCP " src-str " → " dst-str)
+         (let ((sport (unwrap (read-u16be data l4-off)))
+               (dport (unwrap (read-u16be data (+ l4-off 2)))))
+           (str "IPv4/TCP " src-str ":" sport " → " dst-str ":" dport
+                (app-label sport dport)))))
+    ((17)                                      ; UDP
+     (if (< (bytevector-length data) (+ l4-off 4))
+         (str "IPv4/UDP " src-str " → " dst-str)
+         (let ((sport (unwrap (read-u16be data l4-off)))
+               (dport (unwrap (read-u16be data (+ l4-off 2)))))
+           (str "IPv4/UDP " src-str ":" sport " → " dst-str ":" dport
+                (app-label sport dport)))))
+    ((1) (str "IPv4/ICMP " src-str " → " dst-str))
+    ((2) (str "IPv4/IGMP " src-str " → " dst-str))
+    ((58) (str "IPv6/ICMPv6 " src-str " → " dst-str))
+    (else (str "IPv4/proto" proto " " src-str " → " dst-str))))
+
+(def (describe-ipv4 data ip-off)
+  "Parse IPv4 header starting at ip-off; return description string."
+  (if (< (bytevector-length data) (+ ip-off 20))
+      "IPv4 (truncated)"
+      (let* ((ihl     (* (bitwise-and (bytevector-u8-ref data ip-off) #x0F) 4))
+             (proto   (bytevector-u8-ref data (+ ip-off 9)))
+             (src-ip  (unwrap (read-u32be data (+ ip-off 12))))
+             (dst-ip  (unwrap (read-u32be data (+ ip-off 16))))
+             (l4-off  (+ ip-off ihl)))
+        (describe-transport data l4-off proto (fmt-ipv4 src-ip) (fmt-ipv4 dst-ip)))))
+
+(def (describe-packet data)
+  "Return a one-line human-readable description of an Ethernet frame."
+  (let ((len (bytevector-length data)))
+    (if (< len 14)
+        (str "short (" len " bytes)")
+        (let ((etype (if (ok? (read-u16be data 12)) (unwrap (read-u16be data 12)) 0)))
+          (case etype
+            ((#x0800) (describe-ipv4 data 14))
+            ((#x0806) "ARP")
+            ((#x86DD) "IPv6")
+            (else (str "0x" (format "~4,'0x" etype))))))))
+
 ;; ── Live capture ────────────────────────────────────────────────────────────
 
 (def (wafter-list-interfaces)
@@ -138,17 +221,9 @@
                              (ts-sec  (vector-ref pkt 1))
                              (ts-usec (vector-ref pkt 2))
                              (len     (bytevector-length data))
-                             (etype   (if (>= len 14)
-                                         (let ((r (read-u16be data 12)))
-                                           (if (ok? r) (unwrap r) 0))
-                                         0))
-                             (proto   (case etype
-                                        ((#x0800) "IPv4")
-                                        ((#x0806) "ARP")
-                                        ((#x86DD) "IPv6")
-                                        (else (str "0x" (format "~4,'0x" etype))))))
+                             (desc    (describe-packet data)))
                         (printf "  ~a.~6,'0d  ~5d bytes  ~a\n"
-                                ts-sec ts-usec len proto)
+                                ts-sec ts-usec len desc)
                         (set! n (+ n 1))
                         (loop))))))
               (pcap-close cap))
@@ -235,16 +310,8 @@
              (displayln "")
              (let* ((pkt (car items))
                     (size (bytevector-length (cdr pkt))))
-               (printf "~4d ~5d " idx size)
-               (if (>= size 14)
-                   (let ((etype-result (read-u16be (cdr pkt) 12)))
-                     (if (ok? etype-result)
-                         (let ((etype (unwrap etype-result)))
-                           (if (= etype #x0800)
-                               (displayln "Ethernet/IPv4")
-                               (displayln (str "EtherType 0x" (format "~4,'0x" etype)))))
-                         (displayln "Ethernet")))
-                   (displayln "Too small"))
+               (printf "~4d ~5d  " idx size)
+               (displayln (describe-packet (cdr pkt)))
                (loop (cdr items) (+ idx 1)))))))
 
     (else
